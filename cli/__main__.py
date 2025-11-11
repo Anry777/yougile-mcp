@@ -124,6 +124,9 @@ def main(argv=None):
     wh_del = wh_sub.add_parser("delete", help="Delete webhook subscription")
     wh_del.add_argument("--id", required=True, help="Webhook ID")
     wh_del.add_argument("--json", action="store_true", help="Output JSON")
+    # webhooks delete-all
+    wh_del_all = wh_sub.add_parser("delete-all", help="Delete all webhook subscriptions (mark deleted=true)")
+    wh_del_all.add_argument("--json", action="store_true", help="Output JSON")
 
     # webhooks update
     wh_upd = wh_sub.add_parser("update", help="Update webhook subscription")
@@ -317,6 +320,12 @@ def main(argv=None):
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:
                     print(f"Deleted webhook: {result}")
+            elif args.webhooks_cmd == "delete-all":
+                result = await webhooks_cmd.delete_all()
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(f"Deleted {result.get('deleted_count')} webhooks")
             elif args.webhooks_cmd == "update":
                 disabled = True if getattr(args, "disabled", False) else (False if getattr(args, "enabled", False) else None)
                 deleted = True if getattr(args, "deleted", False) else (False if getattr(args, "restore", False) else None)

@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 from typing import Optional, Dict, Any, Union
+import os
 import httpx
 from ..config import settings
 from .auth import AuthManager
@@ -20,6 +21,9 @@ from .exceptions import (
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Raw HTTP debug toggle (set YOUGILE_HTTP_DEBUG=1 to enable)
+_HTTP_DEBUG = os.environ.get("YOUGILE_HTTP_DEBUG", "0") in {"1", "true", "True"}
 
 class YouGileClient:
     """HTTP client for YouGile API with built-in error handling and retries."""
@@ -174,23 +178,51 @@ class YouGileClient:
         
         return masked
     
-    def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
-        """Handle HTTP response and convert errors to exceptions."""
-        if response.status_code == 200 or response.status_code == 201:
+    def _handle_response(self, response: httpx.Response) -> Any:
+        """Handle HTTP response, raising appropriate exceptions for errors.
+        Returns JSON for successful responses.
+        """
+        if 200 <= response.status_code < 300:
+            if _HTTP_DEBUG:
+                try:
+                    logger.debug(
+                        "HTTP DEBUG success: %s %s -> %s\nHeaders: %s\nBody: %s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        dict(response.headers),
+                        response.text,
+                    )
+                except Exception:
+                    pass
             try:
                 return response.json()
-            except ValueError:
-                logger.warning(f"Failed to parse JSON response, returning text")
-                return {"success": True, "data": response.text}
-        
-        # Handle error responses
-        error_data = {}
+            except Exception:
+                return response.text
+        # Error handling
+        if _HTTP_DEBUG:
+            try:
+                logger.error(
+                    "HTTP DEBUG error: %s %s -> %s\nHeaders: %s\nBody: %s",
+                    getattr(response.request, "method", ""),
+                    getattr(response.request, "url", ""),
+                    response.status_code,
+                    dict(response.headers),
+                    response.text,
+                )
+            except Exception:
+                pass
+        # Parse error payload safely to build error details
         try:
-            error_data = response.json()
-        except ValueError:
-            error_data = {"error": response.text or f"HTTP {response.status_code}"}
-        
-        error_message = error_data.get("error", f"HTTP {response.status_code}")
+            parsed = response.json()
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            error_data = parsed
+            error_message = parsed.get("error") or parsed.get("message") or f"HTTP {response.status_code}"
+        else:
+            error_data = {"raw": response.text}
+            error_message = f"HTTP {response.status_code}"
         logger.error(f"API Error {response.status_code}: {error_message}")
         
         if response.status_code == 401:

@@ -41,6 +41,16 @@ async def get_api_keys(client: YouGileClient, login: str, password: str, company
     return response if isinstance(response, list) else []
 
 
+async def get_keys(client: YouGileClient, login: str, password: str, company_id: str) -> List[Dict[str, Any]]:
+    """List API keys for a given user/company via POST /auth/keys/get.
+    Request body: { login, password, companyId }
+    """
+    payload = {"login": login, "password": password, "companyId": company_id}
+    response = await client.post("/auth/keys/get", json=payload)
+    # API returns a list of keys
+    return response if isinstance(response, list) else response.get("content", [])
+
+
 async def create_api_key(client: YouGileClient, login: str, password: str, company_id: str) -> str:
     """Create new API key for company access."""
     credentials = {
