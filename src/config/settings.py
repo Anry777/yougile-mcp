@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # HTTP client settings
     yougile_timeout: int = 30
     yougile_max_retries: int = 3
-    yougile_rate_limit_per_minute: int = 50
+    yougile_rate_limit_per_minute: int = 25
     
     # MCP server settings
     server_name: str = "YouGile MCP Server"
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     
     class Config:
-        env_prefix = "YOUGILE_"
+        env_prefix = ""
         env_file = ".env"
         case_sensitive = False
 

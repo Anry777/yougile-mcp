@@ -4,6 +4,8 @@ Handles requests, retries, rate limiting, and error handling.
 """
 
 import asyncio
+import json
+import time
 from typing import Optional, Dict, Any, Union
 import httpx
 from ..config import settings
@@ -15,7 +17,9 @@ from .exceptions import (
     RateLimitError,
     NotFoundError,
 )
+from ..utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 class YouGileClient:
     """HTTP client for YouGile API with built-in error handling and retries."""
@@ -24,6 +28,8 @@ class YouGileClient:
         self.auth_manager = auth_manager or AuthManager()
         self.base_url = settings.yougile_base_url
         self._client: Optional[httpx.AsyncClient] = None
+        # Simple per-instance throttle to respect configured rate limit
+        self._last_request_ts: float = 0.0
     
     async def __aenter__(self):
         self._client = httpx.AsyncClient(
@@ -69,13 +75,33 @@ class YouGileClient:
         else:
             # Auto-reinitialize if not authenticated
             if not self.auth_manager.is_authenticated():
+                logger.warning("Client not authenticated, attempting auto-reinitialization")
                 await self._auto_reinitialize()
             headers = self.auth_manager.get_auth_headers()
             
         full_url = f"/api-v2{path}" if not path.startswith("/api-v2") else path
         
+        # Log request details
+        logger.debug(f"API Request: {method} {full_url}")
+        if params:
+            logger.debug(f"  Params: {params}")
+        if json:
+            # Mask sensitive data in logs
+            safe_json = self._mask_sensitive_data(json)
+            logger.debug(f"  Body: {safe_json}")
+        
         for attempt in range(settings.yougile_max_retries + 1):
             try:
+                start_ts = time.monotonic()
+                # Throttle based on configured RPM
+                try:
+                    min_interval = 60.0 / max(1, int(settings.yougile_rate_limit_per_minute))
+                except Exception:
+                    min_interval = 1.0
+                wait = (self._last_request_ts + min_interval) - start_ts
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                # issue request
                 response = await self._client.request(
                     method=method,
                     url=full_url,
@@ -85,19 +111,68 @@ class YouGileClient:
                     **kwargs
                 )
                 
-                return self._handle_response(response)
+                logger.debug(f"API Response: {response.status_code} for {method} {full_url}")
+                # Handle 429 centrally: enforce fixed 30s cooldown before retry
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    # Fixed cooldown 30s after hitting 429 (stricter than RPM spacing)
+                    sleep_sec: float = 30.0
+                    # If server recommends longer, respect it
+                    if retry_after:
+                        try:
+                            sleep_sec = max(sleep_sec, float(retry_after))
+                        except ValueError:
+                            pass
+                    logger.warning(
+                        f"Rate limited (429). Sleeping {sleep_sec:.2f}s before retry (attempt {attempt + 1}/{settings.yougile_max_retries + 1})"
+                    )
+                    if attempt == settings.yougile_max_retries:
+                        # Last attempt - convert to error via handler to raise RateLimitError
+                        result = self._handle_response(response)
+                        return result  # unreachable, handler raises
+                    await asyncio.sleep(sleep_sec)
+                    continue
+
+                result = self._handle_response(response)
+                duration_ms = int((time.monotonic() - start_ts) * 1000)
+                logger.debug(f"  Response data size: {len(str(result))} chars")
+                logger.debug(f"  Request duration: {duration_ms} ms (attempt {attempt + 1})")
+                # Mark last request timestamp after successful handling
+                self._last_request_ts = time.monotonic()
+                return result
                 
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as e:
+                duration_ms = int((time.monotonic() - start_ts) * 1000) if 'start_ts' in locals() else None
+                logger.warning(f"Request timeout (attempt {attempt + 1}/{settings.yougile_max_retries + 1}): {method} {full_url} | duration={duration_ms} ms")
                 if attempt == settings.yougile_max_retries:
+                    logger.error(f"Request timeout after {settings.yougile_max_retries + 1} attempts")
                     raise YouGileError("Request timeout")
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 
             except httpx.NetworkError as e:
+                duration_ms = int((time.monotonic() - start_ts) * 1000) if 'start_ts' in locals() else None
+                logger.warning(f"Network error (attempt {attempt + 1}/{settings.yougile_max_retries + 1}): {str(e)} | duration={duration_ms} ms")
                 if attempt == settings.yougile_max_retries:
+                    logger.error(f"Network error after {settings.yougile_max_retries + 1} attempts: {str(e)}")
                     raise YouGileError(f"Network error: {str(e)}")
                 await asyncio.sleep(2 ** attempt)
         
+        logger.error(f"Max retries exceeded for {method} {full_url}")
         raise YouGileError("Max retries exceeded")
+    
+    def _mask_sensitive_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Mask sensitive data in logs."""
+        if not isinstance(data, dict):
+            return data
+        
+        masked = data.copy()
+        sensitive_keys = ['password', 'api_key', 'token', 'secret']
+        
+        for key in masked:
+            if any(sensitive in key.lower() for sensitive in sensitive_keys):
+                masked[key] = "***MASKED***"
+        
+        return masked
     
     def _handle_response(self, response: httpx.Response) -> Dict[str, Any]:
         """Handle HTTP response and convert errors to exceptions."""
@@ -105,6 +180,7 @@ class YouGileClient:
             try:
                 return response.json()
             except ValueError:
+                logger.warning(f"Failed to parse JSON response, returning text")
                 return {"success": True, "data": response.text}
         
         # Handle error responses
@@ -115,16 +191,22 @@ class YouGileClient:
             error_data = {"error": response.text or f"HTTP {response.status_code}"}
         
         error_message = error_data.get("error", f"HTTP {response.status_code}")
+        logger.error(f"API Error {response.status_code}: {error_message}")
         
         if response.status_code == 401:
+            logger.error("Authentication error - invalid credentials or API key")
             raise AuthenticationError(error_message)
         elif response.status_code == 403:
+            logger.error("Authorization error - insufficient permissions")
             raise AuthorizationError(error_message)
         elif response.status_code == 404:
+            logger.error(f"Resource not found: {response.request.url}")
             raise NotFoundError(error_message)
         elif response.status_code == 429:
+            logger.error("Rate limit exceeded")
             raise RateLimitError(error_message)
         else:
+            logger.error(f"API error: {error_message}, details: {error_data}")
             raise YouGileError(error_message, status_code=response.status_code, details=error_data)
     
     # Convenience methods
