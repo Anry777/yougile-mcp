@@ -94,6 +94,18 @@ def main(argv=None):
     p_sync.add_argument("--dry-run", dest="dry_run", action="store_true")
     p_sync.add_argument("--json", action="store_true", help="Output JSON")
 
+    # boards ensure-user-boards
+    p_users = boards_sub.add_parser("ensure-user-boards", help="Create boards for each user having tasks on target board (title = user name)")
+    p_users.add_argument("--target-title", dest="target_title", type=str, default="Незавершенные")
+    p_users.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p_users.add_argument("--json", action="store_true", help="Output JSON")
+
+    # boards distribute-unfinished-by-user
+    p_dist = boards_sub.add_parser("distribute-unfinished-by-user", help="Copy unfinished tasks from target board to per-user boards, preserving columns")
+    p_dist.add_argument("--target-title", dest="target_title", type=str, default="Незавершенные")
+    p_dist.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p_dist.add_argument("--json", action="store_true", help="Output JSON")
+
     args = parser.parse_args(argv)
 
     async def _run():
@@ -186,6 +198,30 @@ def main(argv=None):
                 else:
                     print(
                         f"Sync finished: created={result['created']}, skipped={result['skipped']}, examined={result['examined']}, dry_run={result['dry_run']}"
+                    )
+            elif args.boards_cmd == "ensure-user-boards":
+                result = await boards_cmd.ensure_user_boards(
+                    project_id=project_id,
+                    target_title=args.target_title,
+                    dry_run=args.dry_run,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"User boards ensured: users_detected={result['users_detected']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
+                    )
+            elif args.boards_cmd == "distribute-unfinished-by-user":
+                result = await boards_cmd.distribute_unfinished_by_user(
+                    project_id=project_id,
+                    target_title=args.target_title,
+                    dry_run=args.dry_run,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"Distributed: examined={result['examined']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
                     )
 
     asyncio.run(_run())
