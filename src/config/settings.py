@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     user_context: Optional[str] = None
     
     # Development settings
-    debug: bool = False
     log_level: str = "INFO"
     
     class Config:
