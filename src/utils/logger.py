@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from logging.handlers import RotatingFileHandler
 
 
 class ColoredFormatter(logging.Formatter):
@@ -52,12 +53,11 @@ def setup_logger(
     # Remove existing handlers to avoid duplicates
     logger.handlers.clear()
     
-    # Create logs directory if it doesn't exist
+    # Create logs directory and default log file path (single filename, size-based rotation)
     if log_file is None:
         log_dir = Path(__file__).parent.parent.parent / "logs"
         log_dir.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f"yougile_mcp_{timestamp}.log"
+        log_file = log_dir / "yougile_mcp.log"
     else:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -67,8 +67,10 @@ def setup_logger(
         '%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
+    # Size-based rotating file handler (5 MB, keep 5 backups)
+    file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
+    # Align file handler level with the logger's configured level (e.g., INFO by default)
+    file_handler.setLevel(logger.level)
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
