@@ -21,6 +21,8 @@ from src.api import auth as api_auth  # type: ignore
 from . import tasks as tasks_cmd
 from .config import resolve_project_id
 from . import boards as boards_cmd
+from . import webhooks as webhooks_cmd
+from . import auth as auth_cmd
 
 
 def _load_basic_env():
@@ -38,7 +40,7 @@ def _load_basic_env():
                     k, v = line.split("=", 1)
                     k = k.strip()
                     v = v.strip().strip('"').strip("'")
-                    if k and v and k not in os.environ:
+                    if k and v and (k not in os.environ or not os.environ.get(k)):
                         os.environ[k] = v
     except Exception:
         pass
@@ -106,10 +108,103 @@ def main(argv=None):
     p_dist.add_argument("--dry-run", dest="dry_run", action="store_true")
     p_dist.add_argument("--json", action="store_true", help="Output JSON")
 
+    # webhooks group
+    wh_parser = subparsers.add_parser("webhooks", help="Webhooks operations")
+    wh_parser.add_argument("--json", action="store_true", help="Output JSON")
+    wh_sub = wh_parser.add_subparsers(dest="webhooks_cmd", required=True)
+    # webhooks create
+    wh_create = wh_sub.add_parser("create", help="Create webhook subscription")
+    wh_create.add_argument("--url", required=True, help="Webhook target URL")
+    wh_create.add_argument("--event", required=True, help="Event pattern, e.g. task-* or .*")
+    wh_create.add_argument("--json", action="store_true", help="Output JSON")
+    # webhooks list
+    wh_list = wh_sub.add_parser("list", help="List webhook subscriptions")
+    wh_list.add_argument("--json", action="store_true", help="Output JSON")
+    # webhooks delete
+    wh_del = wh_sub.add_parser("delete", help="Delete webhook subscription")
+    wh_del.add_argument("--id", required=True, help="Webhook ID")
+    wh_del.add_argument("--json", action="store_true", help="Output JSON")
+
+    # webhooks update
+    wh_upd = wh_sub.add_parser("update", help="Update webhook subscription")
+    wh_upd.add_argument("--id", required=True, help="Webhook ID")
+    wh_upd.add_argument("--url", required=False, help="New URL")
+    wh_upd.add_argument("--event", required=False, help="New event pattern")
+    wh_upd.add_argument("--disabled", action="store_true", help="Disable webhook")
+    wh_upd.add_argument("--enabled", action="store_true", help="Enable webhook")
+    wh_upd.add_argument("--deleted", action="store_true", help="Mark webhook as deleted")
+    wh_upd.add_argument("--restore", action="store_true", help="Restore webhook (deleted=false)")
+    wh_upd.add_argument("--json", action="store_true", help="Output JSON")
+
+    auth_parser = subparsers.add_parser("auth", help="Authentication utilities")
+    auth_parser.add_argument("--json", action="store_true", help="Output JSON")
+    auth_sub = auth_parser.add_subparsers(dest="auth_cmd", required=True)
+    # auth keys (list)
+    auth_keys = auth_sub.add_parser("keys", help="List API keys via POST /auth/keys/get")
+    auth_keys.add_argument("--login", required=False, help="User login (email). If omitted, takes YOUGILE_EMAIL from env")
+    auth_keys.add_argument("--password", required=False, help="User password. If omitted, takes YOUGILE_PASSWORD from env")
+    auth_keys.add_argument("--company-id", dest="company_id", required=False, help="Company ID. If omitted, takes YOUGILE_COMPANY_ID from env")
+    auth_keys.add_argument("--json", action="store_true", help="Output JSON")
+    # auth set-api-key
+    auth_set = auth_sub.add_parser("set-api-key", help="Write YOUGILE_API_KEY to .env")
+    group = auth_set.add_mutually_exclusive_group(required=True)
+    group.add_argument("--key", dest="api_key", required=False, help="API key value to write")
+    group.add_argument("--from-latest", dest="from_latest", action="store_true", help="Fetch latest key and write it")
+    auth_set.add_argument("--login", required=False, help="User login (email) for --from-latest")
+    auth_set.add_argument("--password", required=False, help="User password for --from-latest")
+    auth_set.add_argument("--company-id", dest="company_id", required=False, help="Company ID for --from-latest")
+
     args = parser.parse_args(argv)
 
     async def _run():
-        # Lightweight auth init for CLI to avoid importing MCP server
+        if args.command == "auth" and args.auth_cmd == "keys":
+            # Load .env before reading env fallbacks
+            _load_basic_env()
+            login = args.login or os.environ.get("YOUGILE_EMAIL") or os.environ.get("yougile_email")
+            password = args.password or os.environ.get("YOUGILE_PASSWORD") or os.environ.get("yougile_password")
+            company_id = args.company_id or os.environ.get("YOUGILE_COMPANY_ID") or os.environ.get("yougile_company_id")
+            if not login or not password or not company_id:
+                print("auth keys requires --login/--password/--company-id or corresponding env vars", file=sys.stderr)
+                sys.exit(1)
+            result = await auth_cmd.list_keys(login, password, company_id)
+            if getattr(args, "json", False):
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                for k in result:
+                    print(f"{k.get('key')} | company={k.get('companyId')} | deleted={k.get('deleted')} | ts={k.get('timestamp')}")
+            return
+
+        if args.command == "auth" and args.auth_cmd == "set-api-key":
+            from . import auth as auth_cmd_mod
+            _load_basic_env()
+            if getattr(args, "from_latest", False):
+                login = args.login or os.environ.get("YOUGILE_EMAIL") or os.environ.get("yougile_email")
+                password = args.password or os.environ.get("YOUGILE_PASSWORD") or os.environ.get("yougile_password")
+                company_id = args.company_id or os.environ.get("YOUGILE_COMPANY_ID") or os.environ.get("yougile_company_id")
+                if not login or not password or not company_id:
+                    print("set-api-key --from-latest requires --login/--password/--company-id or corresponding env vars", file=sys.stderr)
+                    sys.exit(1)
+                key = await auth_cmd_mod.set_api_key_from_latest(login, password, company_id)
+                if not key:
+                    print("No keys found to write", file=sys.stderr)
+                    sys.exit(1)
+                if getattr(args, "json", False):
+                    print(json.dumps({"written": True, "source": "latest", "key_preview": key[:6] + "..."}, ensure_ascii=False))
+                else:
+                    print("YOUGILE_API_KEY written from latest key")
+            else:
+                if not getattr(args, "api_key", None):
+                    print("--key is required unless --from-latest is specified", file=sys.stderr)
+                    sys.exit(1)
+                from . import auth as auth_cmd_mod2
+                auth_cmd_mod2.write_api_key_to_env(args.api_key)
+                if getattr(args, "json", False):
+                    print(json.dumps({"written": True, "source": "provided", "key_preview": args.api_key[:6] + "..."}, ensure_ascii=False))
+                else:
+                    print("YOUGILE_API_KEY written to .env")
+            return
+
+        # Lightweight auth init for the rest of CLI to avoid importing MCP server
         api_key = None
         company_id = None
         if settings is not None:
@@ -128,10 +223,14 @@ def main(argv=None):
             password = os.environ.get("YOUGILE_PASSWORD") or os.environ.get("yougile_password") or (
                 getattr(settings, "yougile_password", None) if settings is not None else None
             )
-            if email and password and company_id:
+            # Only auto-create when explicitly allowed
+            auto_create = os.environ.get("YOUGILE_AUTO_CREATE_API_KEY", "0") in {"1", "true", "True"}
+            if auto_create and email and password and company_id:
                 try:
                     async with YouGileClient(core_auth.auth_manager.__class__()) as client:
                         api_key = await api_auth.create_api_key(client, email, password, company_id)
+                        if api_key:
+                            auth_cmd.write_api_key_to_env(api_key)
                 except Exception as e:
                     print(f"Failed to auto-create API key: {e}", file=sys.stderr)
         if api_key and company_id:
@@ -146,10 +245,9 @@ def main(argv=None):
                 file=sys.stderr,
             )
             sys.exit(1)
-        # Resolve project id (CLI arg > env > default via cli.config)
-        project_id = resolve_project_id(args.project_id)
-
+        # Resolve project id only for commands that require it
         if args.command == "tasks":
+            project_id = resolve_project_id(getattr(args, "project_id", None))
             if args.tasks_cmd == "list":
                 result = await tasks_cmd.list_tasks(
                     project_id=project_id,
@@ -185,7 +283,7 @@ def main(argv=None):
                         print(desc)
         elif args.command == "boards":
             # resolve project id for boards
-            project_id = resolve_project_id(args.project_id)
+            project_id = resolve_project_id(getattr(args, "project_id", None))
             if args.boards_cmd == "sync-unfinished":
                 result = await boards_cmd.sync_unfinished(
                     project_id=project_id,
@@ -199,6 +297,40 @@ def main(argv=None):
                     print(
                         f"Sync finished: created={result['created']}, skipped={result['skipped']}, examined={result['examined']}, dry_run={result['dry_run']}"
                     )
+        elif args.command == "webhooks":
+            if args.webhooks_cmd == "create":
+                result = await webhooks_cmd.create(args.url, args.event)
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(f"Created webhook: {result}")
+            elif args.webhooks_cmd == "list":
+                result = await webhooks_cmd.list_all()
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    for w in result:
+                        print(f"{w.get('id')} | {w.get('event')} -> {w.get('url')}")
+            elif args.webhooks_cmd == "delete":
+                result = await webhooks_cmd.delete(args.id)
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(f"Deleted webhook: {result}")
+            elif args.webhooks_cmd == "update":
+                disabled = True if getattr(args, "disabled", False) else (False if getattr(args, "enabled", False) else None)
+                deleted = True if getattr(args, "deleted", False) else (False if getattr(args, "restore", False) else None)
+                result = await webhooks_cmd.update(
+                    webhook_id=args.id,
+                    url=args.url,
+                    event=args.event,
+                    disabled=disabled,
+                    deleted=deleted,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(f"Updated webhook: {result}")
             elif args.boards_cmd == "ensure-user-boards":
                 result = await boards_cmd.ensure_user_boards(
                     project_id=project_id,
@@ -223,6 +355,14 @@ def main(argv=None):
                     print(
                         f"Distributed: examined={result['examined']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
                     )
+        elif args.command == "auth":
+            if args.auth_cmd == "keys":
+                result = await auth_cmd.list_keys(args.login, args.password, args.company_id)
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    for k in result:
+                        print(f"{k.get('key')} | company={k.get('companyId')} | deleted={k.get('deleted')} | ts={k.get('timestamp')}")
 
     asyncio.run(_run())
 
