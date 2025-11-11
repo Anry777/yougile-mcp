@@ -13,7 +13,7 @@ class YouGileBaseModel(BaseModel):
     """Base model for all YouGile entities."""
     id: str = Field(description="Unique identifier")
     timestamp: Optional[datetime] = Field(None, description="Creation/modification timestamp")
-    deleted: bool = Field(False, description="Whether the entity is deleted")
+    deleted: Optional[bool] = Field(False, description="Whether the entity is deleted")
 
 
 class PaginatedResponse(BaseModel):

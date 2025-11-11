@@ -10,6 +10,11 @@ from mcp.server.fastmcp import FastMCP, Context
 from .config import settings
 from .core import auth
 from .core.client import YouGileClient
+from .utils.logger import setup_logger
+
+# Initialize logger first thing
+logger = setup_logger("yougile_mcp", log_level=settings.log_level)
+
 from .api import auth as auth_api
 from .yougile_mcp.tools.auth_tools import (
     get_companies_tool, 
@@ -64,6 +69,7 @@ from .yougile_mcp.tools.task_tools_extended import (
     update_task_tool,
     get_task_chat_subscribers_tool,
     update_task_chat_subscribers_tool,
+    delete_tasks_tool,
 )
 from .yougile_mcp.tools.sticker_tools import (
     list_string_stickers_tool,
@@ -143,7 +149,14 @@ async def get_user_context(ctx: Context = None) -> str:
 @mcp.tool()
 async def list_users(ctx: Context) -> list:
     """Get list of all users in the company."""
-    return await list_users_tool(ctx)
+    logger.info("MCP Tool called: list_users")
+    try:
+        result = await list_users_tool(ctx)
+        logger.info(f"list_users completed successfully, returned {len(result) if isinstance(result, list) else 'N/A'} users")
+        return result
+    except Exception as e:
+        logger.error(f"list_users failed: {str(e)}", exc_info=True)
+        raise
 
 @mcp.tool()
 async def invite_user(email: str, first_name: str, last_name: str, role: str = "user", departments: list = None, ctx: Context = None) -> dict:
@@ -295,6 +308,11 @@ async def update_task(task_id: str, title: str = None, description: str = None, 
 async def delete_task(task_id: str, ctx: Context = None) -> dict:
     """Delete a task (soft delete)."""
     return await update_task_tool(task_id, deleted=True, ctx=ctx)
+
+@mcp.tool()
+async def delete_tasks(task_ids: list, ctx: Context = None) -> dict:
+    """Delete multiple tasks (soft delete) in one call. Aggregates success and failures."""
+    return await delete_tasks_tool(task_ids, ctx)
 
 @mcp.tool()
 async def set_task_deadline(task_id: str, deadline_timestamp: int, start_date_timestamp: int = None, with_time: bool = True, ctx: Context = None) -> dict:
@@ -539,32 +557,45 @@ def api_usage_guide():
 
 async def initialize_auth():
     """Initialize authentication automatically from environment variables."""
+    logger.info("=== Initializing authentication ===")
+    
     if not all([settings.yougile_email, settings.yougile_password, settings.yougile_company_id]):
+        logger.warning("Missing required credentials in environment variables")
+        logger.debug(f"Email: {'SET' if settings.yougile_email else 'MISSING'}")
+        logger.debug(f"Password: {'SET' if settings.yougile_password else 'MISSING'}")
+        logger.debug(f"Company ID: {'SET' if settings.yougile_company_id else 'MISSING'}")
         return False
     
     try:
         # First try API key from environment (MCP config)
         api_key_to_test = settings.yougile_api_key
+        logger.debug(f"API key from environment: {'SET' if api_key_to_test else 'NOT SET'}")
         
         # If no API key in environment, try loading from credentials file
         if not api_key_to_test:
+            logger.info("No API key in environment, trying credentials file")
             api_key_to_test = load_api_key_from_credentials()
+            logger.debug(f"API key from credentials file: {'FOUND' if api_key_to_test else 'NOT FOUND'}")
         
         # Test existing API key if we have one
         if api_key_to_test:
+            logger.info("Testing existing API key")
             try:
                 # Test existing key
                 auth.auth_manager.set_credentials(api_key_to_test, settings.yougile_company_id)
                 async with YouGileClient(auth.auth_manager) as client:
                     # Test key with a simple API call (get users)
+                    logger.debug("Testing API key with /users endpoint")
                     await client.get("/users")
                 
+                logger.info("✅ Existing API key is valid")
                 return True
                 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Existing API key test failed: {str(e)}")
         
         # Create new API key
+        logger.info("Creating new API key")
         temp_auth = auth.auth_manager.__class__()
         async with YouGileClient(temp_auth) as client:
             api_key = await auth_api.create_api_key(
@@ -574,15 +605,19 @@ async def initialize_auth():
                 settings.yougile_company_id
             )
             
+            logger.info("✅ New API key created successfully")
+            
             # Save to global auth manager
             auth.auth_manager.set_credentials(api_key, settings.yougile_company_id)
             
             # Save API key to credentials file for future use
             await save_api_key_to_credentials(api_key)
+            logger.info("API key saved to credentials file")
             
         return True
         
-    except Exception:
+    except Exception as e:
+        logger.error(f"❌ Authentication initialization failed: {str(e)}", exc_info=True)
         return False
 
 async def save_api_key_to_credentials(api_key: str):
@@ -650,10 +685,20 @@ def load_api_key_from_credentials() -> str:
 
 def main():
     """Main entry point for the server."""
+    logger.info("=" * 60)
+    logger.info("YouGile MCP Server Starting")
+    logger.info("=" * 60)
+    logger.info(f"Server name: {settings.server_name}")
+    logger.info(f"Base URL: {settings.yougile_base_url}")
+    
     # Initialize authentication if credentials are provided
     if settings.yougile_email and settings.yougile_password and settings.yougile_company_id:
+        logger.info("Credentials found, initializing authentication...")
         asyncio.run(initialize_auth())
+    else:
+        logger.warning("No credentials provided, authentication will be required per request")
     
+    logger.info("Starting MCP server...")
     mcp.run()
 
 

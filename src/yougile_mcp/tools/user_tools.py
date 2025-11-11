@@ -4,6 +4,8 @@ User management and invitations (5 endpoints).
 """
 
 from typing import List, Dict, Any
+import time
+
 from mcp.server.fastmcp import Context
 from ...core import models
 from ...core import auth
@@ -11,19 +13,39 @@ from ...core.client import YouGileClient
 from ...core.exceptions import YouGileError, ValidationError
 from ...api import users
 from ...utils.validation import validate_uuid, validate_email, validate_non_empty_string
+from ...utils.logger import get_logger
+from ._auth_helper import ensure_authenticated
+
+logger = get_logger(__name__)
 
 
 async def list_users_tool(ctx: Context) -> List[models.User]:
     """Get list of all users in the company."""
     try:
         await ctx.info("Fetching users from YouGile...")
-        
+        logger.info("list_users_tool: start")
+
+        # Ensure authentication is initialized (to mirror project tools behavior)
+        await ensure_authenticated(ctx)
+        logger.info("list_users_tool: authentication ensured")
+
+        start_ts = time.monotonic()
+        await ctx.info("Calling API: GET /users ...")
+        logger.info("list_users_tool: calling API /users")
         async with YouGileClient(auth.auth_manager) as client:
             result = await users.get_users(client)
-            
+        duration_ms = int((time.monotonic() - start_ts) * 1000)
+        await ctx.info(f"API call completed in {duration_ms} ms, raw items: {len(result)}")
+        logger.info(f"list_users_tool: API done in {duration_ms} ms, items={len(result)}")
+
+        model_start = time.monotonic()
         user_list = [models.User(**user) for user in result]
-        
-        await ctx.info(f"Successfully retrieved {len(user_list)} users")
+        model_duration = int((time.monotonic() - model_start) * 1000)
+        await ctx.info(f"Parsed into models: {len(user_list)} users in {model_duration} ms")
+        logger.info(f"list_users_tool: parsed {len(user_list)} users in {model_duration} ms")
+
+        await ctx.info(f"Successfully retrieved {len(user_list)} users (total {duration_ms + model_duration} ms)")
+        logger.info(f"list_users_tool: success, total_time={duration_ms + model_duration} ms")
         return user_list
         
     except YouGileError as e:

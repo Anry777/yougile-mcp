@@ -194,3 +194,58 @@ async def update_task_chat_subscribers_tool(
     except Exception as e:
         await ctx.error(f"Unexpected error: {str(e)}")
         raise
+
+
+async def delete_tasks_tool(task_ids: List[str], ctx: Context = None) -> Dict[str, Any]:
+    """Soft delete multiple tasks by setting deleted=True for each task.
+    
+    Args:
+        task_ids: List of task IDs to delete
+    Returns:
+        Dict with aggregated results: success and failure details
+    """
+    try:
+        if not isinstance(task_ids, list) or not task_ids:
+            raise ValidationError("task_ids must be a non-empty list of UUIDs")
+        
+        validated_ids: List[str] = [validate_uuid(tid, "task_id") for tid in task_ids]
+        
+        if ctx:
+            await ctx.info(f"Deleting {len(validated_ids)} tasks (soft delete)...")
+        
+        successes: List[str] = []
+        failures: List[Dict[str, Any]] = []
+        
+        async with YouGileClient(auth.auth_manager) as client:
+            for tid in validated_ids:
+                try:
+                    await tasks.update_task(client, tid, {"deleted": True})
+                    successes.append(tid)
+                    if ctx:
+                        await ctx.info(f"✅ Deleted task {tid}")
+                except YouGileError as e:
+                    failures.append({"task_id": tid, "error": e.message})
+                    if ctx:
+                        await ctx.error(f"API error deleting {tid}: {e.message}")
+                except Exception as e:
+                    failures.append({"task_id": tid, "error": str(e)})
+                    if ctx:
+                        await ctx.error(f"Unexpected error deleting {tid}: {str(e)}")
+        
+        summary = {
+            "success": len(failures) == 0,
+            "requested": len(validated_ids),
+            "success_count": len(successes),
+            "failure_count": len(failures),
+            "successes": successes,
+            "failures": failures,
+        }
+        if ctx:
+            await ctx.info(f"Finished batch delete: {summary['success_count']} ok, {summary['failure_count']} failed")
+        return summary
+    except ValidationError:
+        raise
+    except Exception as e:
+        if ctx:
+            await ctx.error(f"Unexpected error in delete_tasks_tool: {str(e)}")
+        raise
