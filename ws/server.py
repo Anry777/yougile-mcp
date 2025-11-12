@@ -71,10 +71,66 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
     except Exception:
         payload = {"raw": (await request.body()).decode("utf-8", errors="replace")}
 
-    # Pretty print event to terminal
+    # Pretty print event to terminal with concise summary
     evt = payload.get("event") if isinstance(payload, dict) else None
-    obj_id = payload.get("id") if isinstance(payload, dict) else None
-    _log(f"Webhook received: event={evt} id={obj_id}")
-    logger.info(json.dumps(payload, ensure_ascii=False, indent=2))
+    new = payload.get("payload") if isinstance(payload, dict) else None
+    old = payload.get("prevData") if isinstance(payload, dict) else None
+    task_id = None
+    if isinstance(new, dict):
+        task_id = new.get("id") or task_id
+    if isinstance(old, dict):
+        task_id = task_id or old.get("id")
+
+    title_new = new.get("title") if isinstance(new, dict) else None
+    title_old = old.get("title") if isinstance(old, dict) else None
+    col_new = new.get("columnId") if isinstance(new, dict) else None
+    col_old = old.get("columnId") if isinstance(old, dict) else None
+
+    summary_bits = []
+    if title_old or title_new:
+        if title_old and title_new and title_old != title_new:
+            summary_bits.append(f"title: '{title_old}' -> '{title_new}'")
+        elif title_new:
+            summary_bits.append(f"title: '{title_new}'")
+        elif title_old:
+            summary_bits.append(f"title: '{title_old}'")
+    if col_old or col_new:
+        if col_old and col_new and col_old != col_new:
+            summary_bits.append(f"column: {col_old} -> {col_new}")
+        elif col_new:
+            summary_bits.append(f"column: {col_new}")
+        elif col_old:
+            summary_bits.append(f"column: {col_old}")
+
+    summary = "; ".join(summary_bits) if summary_bits else ""
+    _log(f"Webhook received: event={evt} id={task_id} {summary}")
+
+    # Sanitize large/noisy fields before pretty-printing full payload
+    def _sanitize(d: Any) -> Any:
+        try:
+            if not isinstance(d, dict):
+                return d
+            d2 = dict(d)
+            for key in ("payload", "prevData"):
+                if isinstance(d2.get(key), dict):
+                    inner = dict(d2[key])
+                    dl = inner.get("deadline")
+                    if isinstance(dl, dict) and "history" in dl:
+                        dl2 = dict(dl)
+                        # keep only the last item in history to reduce noise
+                        hist = dl2.get("history")
+                        if isinstance(hist, list) and len(hist) > 1:
+                            dl2["history"] = hist[-1:]
+                        inner["deadline"] = dl2
+                    # Avoid logging massive subtasks arrays fully
+                    st = inner.get("subtasks")
+                    if isinstance(st, list) and len(st) > 20:
+                        inner["subtasks"] = st[:20] + ["…", f"total={len(st)}"]
+                    d2[key] = inner
+            return d2
+        except Exception:
+            return d
+
+    logger.info(json.dumps(_sanitize(payload), ensure_ascii=False, indent=2))
 
     return JSONResponse({"success": True})
