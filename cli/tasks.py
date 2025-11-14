@@ -6,6 +6,7 @@ from src.core import auth as core_auth
 from src.api import tasks as api_tasks
 from src.api import boards as api_boards
 from src.api import columns as api_columns
+from src.api import chats as api_chats
 
 
 async def list_tasks(
@@ -77,3 +78,46 @@ async def get_task(task_id: str, project_id: str) -> Dict[str, Any]:
             return {}
 
         return task
+
+
+def _norm_text(s: Optional[str]) -> str:
+    return (s or "").strip().casefold()
+
+
+async def get_task_comments_by_titles(
+    project_id: str,
+    board_title: str,
+    column_title: str,
+    task_title: str,
+) -> List[Dict[str, Any]]:
+    """Resolve board/column/task by titles and return chat messages (comments).
+    Notes: chats API uses chatId == taskId per importer logic.
+    """
+    async with YouGileClient(core_auth.auth_manager) as client:
+        # Find board by title within project
+        boards = await api_boards.get_boards(client, project_id=project_id, limit=1000, offset=0)
+        want_board = _norm_text(board_title)
+        board = next((b for b in boards if _norm_text(b.get("title")) == want_board), None)
+        if not board:
+            return []
+        # Find column by title within board
+        cols = await api_columns.get_columns(client, board_id=board.get("id"))
+        want_col = _norm_text(column_title)
+        col = next((c for c in cols if _norm_text(c.get("title")) == want_col), None)
+        if not col:
+            return []
+        # Find task by title within column
+        tasks = await api_tasks.get_tasks(client, column_id=col.get("id"), title=task_title, limit=100, offset=0, include_deleted=False)
+        want_task = _norm_text(task_title)
+        task = next((t for t in tasks if _norm_text(t.get("title")) == want_task), None)
+        if not task:
+            return []
+        task_id = task.get("id")
+        if not task_id:
+            return []
+        # Fetch chat messages for the task (chatId == taskId)
+        try:
+            msgs = await api_chats.get_chat_messages(client, task_id)
+        except Exception:
+            msgs = []
+        return msgs or []

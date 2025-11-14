@@ -10,6 +10,25 @@
 E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli <команда> [подкоманда] [опции]
 ```
 
+---
+
+## Команда: projects — операции с проектами
+
+Общие флаги группы:
+
+- --json
+
+Подкоманды:
+
+- list — вывести список проектов компании
+  - Параметры:
+    - --json
+  - Примеры:
+  ```powershell
+  E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli projects list
+  E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli projects list --json
+  ```
+
 CLI автоматически подхватывает переменные из файла `.env` (формат KEY=VALUE) в корне проекта, если их нет в окружении.
 
 ## Требуемые переменные окружения
@@ -56,6 +75,18 @@ CLI автоматически подхватывает переменные и�
     ```powershell
     E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli tasks --project-id <PROJECT_ID> get --id <TASK_ID>
     E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli tasks --project-id <PROJECT_ID> get --id <TASK_ID> --json
+    ```
+
+- comments-by-title — получить комментарии (сообщения чата) задачи по названиям доски/колонки/задачи
+  - Параметры:
+    - --board <str> (обязательно) — название доски
+    - --column <str> (обязательно) — название колонки
+    - --task <str> (обязательно) — название задачи
+    - --json
+  - Примеры:
+    ```powershell
+    E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli tasks --project-id <PROJECT_ID> comments-by-title --board "aand86@gmail.com" --column "Закупки" --task "РБ Создание доп расходов на приход" --json
+    E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli tasks comments-by-title --board "aand86@gmail.com" --column "Закупки" --task "РБ Создание доп расходов на приход"
     ```
 
 ---
@@ -223,31 +254,57 @@ CLI автоматически подхватывает переменные и�
 ### yougile-cli --help
 
 ```text
-usage: yougile-cli [-h] [--json] {tasks,boards,webhooks,auth} ...
+usage: yougile-cli [-h] [--json] {tasks,boards,webhooks,auth,projects,import} ...
 
 YouGile CLI utilities
 
 positional arguments:
-  {tasks,boards,webhooks,auth}
+  {tasks,boards,webhooks,auth,projects,import}
     tasks               Task operations
     boards              Board operations
     webhooks            Webhooks operations
     auth                Authentication utilities
+    projects            Project operations
+    import              Import data into local DB
 
 options:
   -h, --help            show this help message and exit
   --json                Output JSON
 ```
 
+---
+
+## Команда: import — импорт проекта в локальную БД
+
+Общие флаги группы:
+
+- --json
+
+Подкоманды:
+
+- project — импорт всего проекта в локальную SQLite БД
+  - Параметры:
+    - --project-id <UUID> — ID проекта (если не указан, берётся из окружения/дефолта)
+    - --db <path> — путь к SQLite файлу (по умолчанию ./yougile_local.db)
+    - --reset — полностью пересоздать данные проекта в БД перед импортом
+    - --prune — удалить локальные записи, которых нет в облаке (синхронизация)
+    - --json
+  - Примеры:
+  ```powershell
+  E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli import project --project-id <PROJECT_ID> --db .\yougile_local.db --reset --prune --json
+  E:\Python\yougile-mcp\venv\Scripts\python.exe -m cli import project --db .\yougile_local.db
+  ```
+
 ### yougile-cli tasks --help
 
 ```text
-usage: yougile-cli tasks [-h] [--json] [--project-id PROJECT_ID] {list,get} ...
+usage: yougile-cli tasks [-h] [--json] [--project-id PROJECT_ID] {list,get,comments-by-title} ...
 
 positional arguments:
-  {list,get}
+  {list,get,comments-by-title}
     list                List tasks
     get                 Get task by id
+    comments-by-title   Get task comments by board/column/task titles
 
 options:
   -h, --help            show this help message and exit

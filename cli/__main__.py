@@ -23,6 +23,7 @@ from .config import resolve_project_id
 from . import boards as boards_cmd
 from . import webhooks as webhooks_cmd
 from . import auth as auth_cmd
+from . import projects as projects_cmd
 
 
 def _load_basic_env():
@@ -78,6 +79,13 @@ def main(argv=None):
     p_get = tasks_sub.add_parser("get", help="Get task by id")
     p_get.add_argument("--id", required=True)
     p_get.add_argument("--json", action="store_true", help="Output JSON")
+
+    # tasks comments-by-title (temporary helper)
+    p_cbt = tasks_sub.add_parser("comments-by-title", help="Get task comments by board/column/task titles")
+    p_cbt.add_argument("--board", dest="board_title", required=True, help="Board title")
+    p_cbt.add_argument("--column", dest="column_title", required=True, help="Column title")
+    p_cbt.add_argument("--task", dest="task_title", required=True, help="Task title")
+    p_cbt.add_argument("--json", action="store_true", help="Output JSON")
 
     # boards group
     boards_parser = subparsers.add_parser("boards", help="Board operations")
@@ -156,6 +164,25 @@ def main(argv=None):
     auth_set.add_argument("--login", required=False, help="User login (email) for --from-latest")
     auth_set.add_argument("--password", required=False, help="User password for --from-latest")
     auth_set.add_argument("--company-id", dest="company_id", required=False, help="Company ID for --from-latest")
+
+    # import group
+    imp_parser = subparsers.add_parser("import", help="Import data into local DB")
+    imp_parser.add_argument("--json", action="store_true", help="Output JSON")
+    imp_sub = imp_parser.add_subparsers(dest="import_cmd", required=True)
+    # import project
+    imp_proj = imp_sub.add_parser("project", help="Import full project into local SQLite DB")
+    imp_proj.add_argument("--project-id", dest="project_id", type=str, default=None, help="Project UUID to import")
+    imp_proj.add_argument("--db", dest="db_path", type=str, default="./yougile_local.db", help="SQLite DB file path")
+    imp_proj.add_argument("--reset", dest="reset", action="store_true", help="Drop and reimport selected project")
+    imp_proj.add_argument("--prune", dest="prune", action="store_true", help="Delete local records missing in cloud")
+    imp_proj.add_argument("--json", action="store_true", help="Output JSON")
+
+    # projects group
+    projects_parser = subparsers.add_parser("projects", help="Project operations")
+    projects_parser.add_argument("--json", action="store_true", help="Output JSON")
+    projects_sub = projects_parser.add_subparsers(dest="projects_cmd", required=True)
+    p_plist = projects_sub.add_parser("list", help="List projects in company")
+    p_plist.add_argument("--json", action="store_true", help="Output JSON")
 
     args = parser.parse_args(argv)
 
@@ -284,6 +311,22 @@ def main(argv=None):
                     if desc:
                         print("description_html:")
                         print(desc)
+            elif args.tasks_cmd == "comments-by-title":
+                result = await tasks_cmd.get_task_comments_by_titles(
+                    project_id=project_id,
+                    board_title=args.board_title,
+                    column_title=args.column_title,
+                    task_title=args.task_title,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    for m in result:
+                        mid = m.get("id")
+                        author = m.get("authorId") or m.get("author") or m.get("userId")
+                        ts = m.get("timestamp") or m.get("createdAt")
+                        text = m.get("text") or m.get("message")
+                        print(f"{mid} | {author} | {ts} | {text}")
         elif args.command == "boards":
             # resolve project id for boards
             project_id = resolve_project_id(getattr(args, "project_id", None))
@@ -299,6 +342,30 @@ def main(argv=None):
                 else:
                     print(
                         f"Sync finished: created={result['created']}, skipped={result['skipped']}, examined={result['examined']}, dry_run={result['dry_run']}"
+                    )
+            elif args.boards_cmd == "ensure-user-boards":
+                result = await boards_cmd.ensure_user_boards(
+                    project_id=project_id,
+                    target_title=args.target_title,
+                    dry_run=args.dry_run,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"User boards ensured: users_detected={result['users_detected']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
+                    )
+            elif args.boards_cmd == "distribute-unfinished-by-user":
+                result = await boards_cmd.distribute_unfinished_by_user(
+                    project_id=project_id,
+                    target_title=args.target_title,
+                    dry_run=args.dry_run,
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"Distributed: examined={result['examined']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
                     )
         elif args.command == "webhooks":
             if args.webhooks_cmd == "create":
@@ -340,41 +407,43 @@ def main(argv=None):
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:
                     print(f"Updated webhook: {result}")
-            elif args.boards_cmd == "ensure-user-boards":
-                result = await boards_cmd.ensure_user_boards(
+        elif args.command == "projects":
+            if args.projects_cmd == "list":
+                result = await projects_cmd.list_projects()
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    for p in result:
+                        print(f"{p.get('id')} | {p.get('title')}")
+        elif args.command == "import":
+            try:
+                from src.services import importer as importer_service  # Delay heavy optional deps
+            except ModuleNotFoundError as exc:
+                missing = exc.name or "required dependencies"
+                print(
+                    f"Import commands require optional dependency '{missing}'. Install the extra packages from requirements.txt and retry.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            if args.import_cmd == "project":
+                # Resolve project id
+                project_id = resolve_project_id(getattr(args, "project_id", None))
+                # Run importer
+                result = await importer_service.import_project(
                     project_id=project_id,
-                    target_title=args.target_title,
-                    dry_run=args.dry_run,
+                    db_path=getattr(args, "db_path", "./yougile_local.db"),
+                    reset=getattr(args, "reset", False),
+                    prune=getattr(args, "prune", False),
                 )
                 if getattr(args, "json", False):
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:
                     print(
-                        f"User boards ensured: users_detected={result['users_detected']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
+                        f"Import done: project={result.get('project_id')} boards={result.get('boards')} columns={result.get('columns')} tasks={result.get('tasks')}"
                     )
-            elif args.boards_cmd == "distribute-unfinished-by-user":
-                result = await boards_cmd.distribute_unfinished_by_user(
-                    project_id=project_id,
-                    target_title=args.target_title,
-                    dry_run=args.dry_run,
-                )
-                if getattr(args, "json", False):
-                    print(json.dumps(result, ensure_ascii=False, indent=2))
-                else:
-                    print(
-                        f"Distributed: examined={result['examined']}, created={result['created']}, skipped={result['skipped']}, dry_run={result['dry_run']}"
-                    )
-        elif args.command == "auth":
-            if args.auth_cmd == "keys":
-                result = await auth_cmd.list_keys(args.login, args.password, args.company_id)
-                if getattr(args, "json", False):
-                    print(json.dumps(result, ensure_ascii=False, indent=2))
-                else:
-                    for k in result:
-                        print(f"{k.get('key')} | company={k.get('companyId')} | deleted={k.get('deleted')} | ts={k.get('timestamp')}")
 
     asyncio.run(_run())
-
 
 if __name__ == "__main__":
     main()
