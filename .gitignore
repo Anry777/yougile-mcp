@@ -150,3 +150,10 @@ logs/
 mcp_config.json
 
 # YouGile MCP credentials
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+yougile_local.db
+yougile_local_*.db
