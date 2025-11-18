@@ -85,8 +85,27 @@ def upgrade() -> None:
         sa.Column('timestamp', sa.DateTime(), nullable=False),
     )
 
+    # webhook_events
+    op.create_table(
+        'webhook_events',
+        sa.Column('id', sa.Integer(), primary_key=True, nullable=False, autoincrement=True),
+        sa.Column('source', sa.String(length=32), nullable=False),
+        sa.Column('event_type', sa.String(length=128), nullable=True),
+        sa.Column('entity_type', sa.String(length=64), nullable=True),
+        sa.Column('entity_id', sa.String(length=64), nullable=True),
+        sa.Column('event_external_id', sa.String(length=128), nullable=True),
+        sa.Column('received_at', sa.DateTime(), nullable=False),
+        sa.Column('processed', sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column('processed_at', sa.DateTime(), nullable=True),
+        sa.Column('retry_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('error', sa.Text(), nullable=True),
+        sa.Column('payload', sa.JSON(), nullable=False),
+        sa.UniqueConstraint('event_external_id', name='uq_webhook_event_external_id'),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table('webhook_events')
     op.drop_table('comments')
     op.drop_table('task_assignees')
     op.drop_table('tasks')

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     yougile_max_retries: int = 3
     yougile_rate_limit_per_minute: int = 25
     
+    # Local database URL (SQLite by default)
+    yougile_local_db_url: str = "sqlite+aiosqlite:///data/yougile_local.db"
+    
     # MCP server settings
     server_name: str = "YouGile MCP Server"
     server_version: str = "1.0.0"

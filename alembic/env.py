@@ -17,6 +17,35 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
+
+def _load_env_file() -> None:
+    """Load .env from project root into os.environ (simple KEY=VALUE parser).
+
+    This ensures Alembic sees YOUGILE_LOCAL_DB_URL and other settings.
+    """
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+    try:
+        with env_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and value and not os.environ.get(key):
+                    os.environ[key] = value
+    except Exception:
+        # Fail silently; Alembic will fall back to its own config/URL
+        pass
+
+
+_load_env_file()
+
 # Import ORM Base metadata (support both with and without 'src' prefix)
 try:
     from src.localdb.session import Base  # type: ignore
@@ -47,7 +76,12 @@ target_metadata = Base.metadata
 
 def get_url() -> str:
     # Take from alembic.ini or env var, or fallback to default local DB
-    url = (os.getenv("ALEMBIC_DATABASE_URL") or config.get_main_option("sqlalchemy.url") or "sqlite+aiosqlite:///yougile_local.db")
+    url = (
+        os.getenv("ALEMBIC_DATABASE_URL")
+        or os.getenv("YOUGILE_LOCAL_DB_URL")
+        or config.get_main_option("sqlalchemy.url")
+        or "sqlite+aiosqlite:///yougile_local.db"
+    )
     return url
 
 

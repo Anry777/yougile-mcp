@@ -10,6 +10,10 @@ from typing import Any, Dict
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
+from src.config import settings
+from src.localdb.session import init_engine, async_engine, Base, async_session
+from src.localdb.models import WebhookEvent
+
 app = FastAPI(title="YouGile Webhook Debug Server")
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # optional shared secret
@@ -47,6 +51,17 @@ def _setup_logger() -> logging.Logger:
 
 
 logger = _setup_logger()
+
+
+@app.on_event("startup")
+async def init_local_db() -> None:
+    db_url = getattr(settings, "yougile_local_db_url", None) or "sqlite+aiosqlite:///yougile_local.db"
+    init_engine(db_url)
+    if async_engine is not None:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    else:
+        logger.error("async_engine is not initialized after init_engine call")
 
 
 def _log(msg: str) -> None:
@@ -132,5 +147,37 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
             return d
 
     logger.info(json.dumps(_sanitize(payload), ensure_ascii=False, indent=2))
+
+    try:
+        if async_session is not None:
+            async with async_session() as session:
+                entity_id = None
+                if isinstance(new, dict):
+                    entity_id = new.get("id") or entity_id
+                if isinstance(old, dict):
+                    entity_id = entity_id or old.get("id")
+                entity_type = None
+                if isinstance(new, dict):
+                    entity_type = new.get("entityType") or entity_type
+                if not entity_type and isinstance(payload, dict):
+                    entity_type = payload.get("entityType")
+                event = WebhookEvent(
+                    source="yougile",
+                    event_type=evt if isinstance(evt, str) else None,
+                    entity_type=entity_type,
+                    entity_id=str(entity_id) if entity_id is not None else None,
+                    event_external_id=None,
+                    received_at=datetime.utcnow(),
+                    processed=False,
+                    retry_count=0,
+                    error=None,
+                    payload=payload,
+                )
+                session.add(event)
+                await session.commit()
+        else:
+            logger.warning("async_session is not initialized, skipping DB logging for webhook event")
+    except Exception as e:
+        logger.exception(f"Failed to persist webhook event: {e}")
 
     return JSONResponse({"success": True})

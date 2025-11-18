@@ -17,6 +17,7 @@ except Exception:
 from src.core import auth as core_auth  # type: ignore
 from src.core.client import YouGileClient  # type: ignore
 from src.api import auth as api_auth  # type: ignore
+from src.api import stickers as api_stickers  # type: ignore
 
 from . import tasks as tasks_cmd
 from .config import resolve_project_id
@@ -24,6 +25,7 @@ from . import boards as boards_cmd
 from . import webhooks as webhooks_cmd
 from . import auth as auth_cmd
 from . import projects as projects_cmd
+from src.services import stats as stats_service
 
 
 def _load_basic_env():
@@ -177,12 +179,41 @@ def main(argv=None):
     imp_proj.add_argument("--prune", dest="prune", action="store_true", help="Delete local records missing in cloud")
     imp_proj.add_argument("--json", action="store_true", help="Output JSON")
 
+    # import all projects
+    imp_all = imp_sub.add_parser("all-projects", help="Import all projects into local SQLite DB")
+    imp_all.add_argument("--db", dest="db_path", type=str, default="./yougile_local.db", help="SQLite DB file path")
+    imp_all.add_argument("--reset", dest="reset", action="store_true", help="Drop and reimport selected projects")
+    imp_all.add_argument("--prune", dest="prune", action="store_true", help="Delete local records missing in cloud")
+    imp_all.add_argument("--include-deleted", dest="include_deleted", action="store_true", help="Also import deleted/archived projects")
+    imp_all.add_argument("--json", action="store_true", help="Output JSON")
+
     # projects group
     projects_parser = subparsers.add_parser("projects", help="Project operations")
     projects_parser.add_argument("--json", action="store_true", help="Output JSON")
     projects_sub = projects_parser.add_subparsers(dest="projects_cmd", required=True)
     p_plist = projects_sub.add_parser("list", help="List projects in company")
     p_plist.add_argument("--json", action="store_true", help="Output JSON")
+
+    # db group
+    db_parser = subparsers.add_parser("db", help="Local DB utilities")
+    db_sub = db_parser.add_subparsers(dest="db_cmd", required=True)
+    db_stats = db_sub.add_parser("stats", help="Show basic statistics for local DB")
+    db_stats.add_argument("--db", dest="db_path", type=str, default="./yougile_local.db", help="SQLite DB file path (optional, default uses YOUGILE_LOCAL_DB_URL)")
+    db_stats.add_argument("--json", action="store_true", help="Output JSON")
+    db_sprints = db_sub.add_parser("sprints", help="Show sample tasks with stickers (sprints analysis)")
+    db_sprints.add_argument("--db", dest="db_path", type=str, default="./yougile_local.db", help="SQLite DB file path (optional, default uses YOUGILE_LOCAL_DB_URL)")
+    db_sprints.add_argument("--limit", type=int, default=20, help="How many tasks with stickers to show")
+    db_sprints.add_argument("--json", action="store_true", help="Output JSON")
+    db_sync_sprints = db_sub.add_parser("sync-sprints", help="Sync sprint stickers directory from YouGile into local DB")
+    db_sync_sprints.add_argument("--db", dest="db_path", type=str, default="./yougile_local.db", help="SQLite DB file path (optional, default uses YOUGILE_LOCAL_DB_URL)")
+    db_sync_sprints.add_argument("--json", action="store_true", help="Output JSON")
+
+    # stickers group (for sprint/string stickers debug)
+    stickers_parser = subparsers.add_parser("stickers", help="Sticker utilities (string/sprint stickers)")
+    stickers_parser.add_argument("--json", action="store_true", help="Output JSON")
+    stickers_sub = stickers_parser.add_subparsers(dest="stickers_cmd", required=True)
+    s_sprint_dump = stickers_sub.add_parser("sprint-dump", help="Dump sprint stickers from YouGile API")
+    s_sprint_dump.add_argument("--json", action="store_true", help="Output JSON")
 
     args = parser.parse_args(argv)
 
@@ -435,6 +466,7 @@ def main(argv=None):
                     db_path=getattr(args, "db_path", "./yougile_local.db"),
                     reset=getattr(args, "reset", False),
                     prune=getattr(args, "prune", False),
+                    sync_sprints=True,
                 )
                 if getattr(args, "json", False):
                     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -442,6 +474,101 @@ def main(argv=None):
                     print(
                         f"Import done: project={result.get('project_id')} boards={result.get('boards')} columns={result.get('columns')} tasks={result.get('tasks')}"
                     )
+            elif args.import_cmd == "all-projects":
+                result = await importer_service.import_all_projects(
+                    db_path=getattr(args, "db_path", "./yougile_local.db"),
+                    reset=getattr(args, "reset", False),
+                    prune=getattr(args, "prune", False),
+                    include_deleted=getattr(args, "include_deleted", False),
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"Import all projects done: projects={result.get('projects')} boards={result.get('boards')} columns={result.get('columns')} tasks={result.get('tasks')}"
+                    )
+        elif args.command == "db":
+            if args.db_cmd == "stats":
+                result = await stats_service.get_db_stats(
+                    db_path=getattr(args, "db_path", "./yougile_local.db"),
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print("Local DB statistics:")
+                    print(f"  Projects:        {result.get('projects')}")
+                    print(f"  Boards:          {result.get('boards')}")
+                    print(f"  Columns:         {result.get('columns')}")
+                    print(f"  Users:           {result.get('users')}")
+                    print(f"  Tasks:           {result.get('tasks')}")
+                    print(f"    Completed:     {result.get('tasks_completed')}")
+                    print(f"    Active:        {result.get('tasks_active')}")
+                    print(f"    Archived:      {result.get('tasks_archived')}")
+                    print(f"  Comments:        {result.get('comments')}")
+                    print(f"  Webhook events:  {result.get('webhook_events')}")
+                    print()
+                    print("Top projects by task count:")
+                    for item in result.get("top_projects_by_tasks") or []:
+                        print(f"  {item.get('tasks'):5} tasks | {item.get('project_id')} | {item.get('title')}")
+                    print()
+                    user_stats = result.get("user_task_stats") or []
+                    if user_stats:
+                        print("Tasks by user (assignments):")
+                        for u in user_stats:
+                            name = u.get("name") or "<no name>"
+                            print(
+                                f"  {name} ({u.get('user_id')}): total={u.get('tasks_total')} "
+                                f"done={u.get('tasks_completed')} active={u.get('tasks_active')} archived={u.get('tasks_archived')}"
+                            )
+                    print()
+                    proj_activity = result.get("project_last_activity") or []
+                    if proj_activity:
+                        print("Project last activity (by comments):")
+                        for p in proj_activity:
+                            ts = p.get("last_comment_at") or "-"
+                            print(f"  {ts} | {p.get('project_id')} | {p.get('title')}")
+            elif args.db_cmd == "sprints":
+                rows = await stats_service.sample_tasks_with_stickers(
+                    db_path=getattr(args, "db_path", "./yougile_local.db"),
+                    limit=getattr(args, "limit", 20),
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(rows, ensure_ascii=False, indent=2))
+                else:
+                    print("Sample tasks with stickers (possible sprint data):")
+                    for r in rows:
+                        print("-" * 80)
+                        print(f"Task:    {r.get('task_id')}")
+                        print(f"Project: {r.get('project_title')}")
+                        print(f"Board:   {r.get('board_title')} | Column: {r.get('column_title')}")
+                        print("Stickers JSON:")
+                        print(json.dumps(r.get("stickers"), ensure_ascii=False, indent=2))
+            elif args.db_cmd == "sync-sprints":
+                try:
+                    from src.services import sprints as sprints_service
+                except ModuleNotFoundError as exc:
+                    missing = exc.name or "required dependencies"
+                    print(
+                        f"Sync sprints requires optional dependency '{missing}'. Install the extra packages from requirements.txt and retry.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+                result = await sprints_service.sync_sprint_stickers(
+                    db_path=getattr(args, "db_path", "./yougile_local.db"),
+                )
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(
+                        f"Sprint stickers synced: stickers={result.get('stickers')} states={result.get('states')} db={result.get('db_url')}"
+                    )
+        elif args.command == "stickers":
+            if args.stickers_cmd == "sprint-dump":
+                async with YouGileClient(core_auth.auth_manager) as client:
+                    result = await api_stickers.get_sprint_stickers(client)
+                # По умолчанию выводим JSON, так как это отладочная команда
+                print(json.dumps(result, ensure_ascii=False, indent=2))
 
     asyncio.run(_run())
 

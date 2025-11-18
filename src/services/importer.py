@@ -16,6 +16,7 @@ from src.api import tasks as api_tasks
 from src.api import users as api_users
 from src.api import chats as api_chats
 
+from src.config import settings
 from src.localdb.session import Base, init_engine, make_sqlite_url
 from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment
 
@@ -130,11 +131,27 @@ async def import_project(
     db_path: str = "./yougile_local.db",
     reset: bool = False,
     prune: bool = False,
+    sync_sprints: bool = False,
 ) -> Dict[str, Any]:
     # Init DB
-    db_url = make_sqlite_url(db_path)
+    if db_path and db_path != "./yougile_local.db":
+        db_url = make_sqlite_url(db_path)
+    elif getattr(settings, "yougile_local_db_url", None):
+        db_url = settings.yougile_local_db_url
+    else:
+        db_url = make_sqlite_url(db_path)
     init_engine(db_url)
     await _create_schema_if_needed()
+
+    # Опционально синхронизируем справочник спринтов
+    if sync_sprints:
+        try:
+            from src.services import sprints as sprints_service  # type: ignore
+
+            await sprints_service.sync_sprint_stickers(db_path=db_path)
+        except Exception:
+            # Не валим весь импорт проекта из-за проблем со спринтами
+            pass
 
     # API client
     async with YouGileClient(core_auth.auth_manager) as client:
@@ -312,3 +329,79 @@ async def import_project(
         "columns": len(col_ids),
         "tasks": len(task_ids),
     }
+
+
+async def import_all_projects(
+    db_path: str = "./yougile_local.db",
+    reset: bool = False,
+    prune: bool = False,
+    include_deleted: bool = False,
+) -> Dict[str, Any]:
+    """Import all projects of the current company into local DB.
+
+    Reuses import_project for each project. DB URL is resolved the same way as in import_project
+    (explicit db_path has priority over YOUGILE_LOCAL_DB_URL).
+    """
+    # Init DB once
+    if db_path and db_path != "./yougile_local.db":
+        db_url = make_sqlite_url(db_path)
+    elif getattr(settings, "yougile_local_db_url", None):
+        db_url = settings.yougile_local_db_url
+    else:
+        db_url = make_sqlite_url(db_path)
+    init_engine(db_url)
+    await _create_schema_if_needed()
+
+    # Один раз синхронизируем справочник спринтов для всей компании
+    try:
+        from src.services import sprints as sprints_service  # type: ignore
+
+        await sprints_service.sync_sprint_stickers(db_path=db_path)
+    except Exception:
+        # Не останавливаем массовый импорт из-за неудачи с синком спринтов
+        pass
+
+    summary: Dict[str, Any] = {
+        "success": True,
+        "projects": 0,
+        "boards": 0,
+        "columns": 0,
+        "tasks": 0,
+        "project_results": [],
+    }
+
+    # Use a lightweight client only to list projects
+    async with YouGileClient(core_auth.auth_manager) as client:
+        projects = await api_projects.get_projects(client)
+
+    for proj in projects:
+        pid = proj.get("id")
+        if not pid:
+            continue
+        # Skip deleted/archived projects unless explicitly requested
+        if not include_deleted and proj.get("deleted"):
+            continue
+        try:
+            res = await import_project(
+                project_id=pid,
+                db_path=db_path,
+                reset=reset,
+                prune=prune,
+                sync_sprints=False,
+            )
+        except Exception as exc:
+            summary["project_results"].append({
+                "project_id": pid,
+                "success": False,
+                "error": str(exc),
+            })
+            summary["success"] = False
+            continue
+
+        summary["projects"] += 1
+        summary["boards"] += res.get("boards", 0)
+        summary["columns"] += res.get("columns", 0)
+        summary["tasks"] += res.get("tasks", 0)
+        summary["project_results"].append(res)
+
+    return summary
