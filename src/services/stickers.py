@@ -10,7 +10,7 @@ from src.core import auth as core_auth
 from src.core.client import YouGileClient
 from src.config import settings
 from src.localdb.session import init_engine, make_sqlite_url, async_engine, Base
-from src.localdb.models import SprintSticker, SprintState
+from src.localdb.models import SprintSticker, SprintState, StringSticker, StringState
 
 
 def _to_dt_ms(value: Any) -> datetime | None:
@@ -136,6 +136,120 @@ async def sync_sprint_stickers(db_path: str = "./yougile_local.db") -> Dict[str,
                     if stale_ids:
                         await session.execute(
                             delete(SprintState).where(SprintState.id.in_(list(stale_ids)))
+                        )
+
+    return {
+        "success": True,
+        "db_url": db_url,
+        "stickers": total_stickers,
+        "states": total_states,
+    }
+
+
+async def sync_string_stickers(db_path: str = "./yougile_local.db") -> Dict[str, Any]:
+    """Синхронизировать справочник string-stickers (кастомные поля со списком состояний).
+
+    Храним только id/name/deleted + id/name состояний.
+    """
+
+    # URL БД
+    if db_path and db_path != "./yougile_local.db":
+        db_url = make_sqlite_url(db_path)
+    elif getattr(settings, "yougile_local_db_url", None):
+        db_url = settings.yougile_local_db_url
+    else:
+        db_url = make_sqlite_url(db_path)
+
+    init_engine(db_url)
+    assert async_engine is not None
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Тянем string-stickers из API (c возможным paging)
+    async with YouGileClient(core_auth.auth_manager) as client:
+        offset = 0
+        limit = 100
+        items: list[dict] = []
+        while True:
+            resp = await api_stickers.get_string_stickers(
+                client, limit=limit, offset=offset, include_deleted=True
+            )
+            batch: list[dict]
+            paging_next = False
+            if isinstance(resp, dict):
+                batch = resp.get("content") or []
+                paging = resp.get("paging") or {}
+                paging_next = bool(paging.get("next"))
+            else:
+                batch = resp or []
+            if not batch:
+                break
+            items.extend([b for b in batch if isinstance(b, dict)])
+            offset += len(batch)
+            if not paging_next:
+                break
+
+    from src.localdb.session import async_session as session_factory
+
+    if session_factory is None:
+        raise RuntimeError("DB session factory is not initialized")
+
+    total_stickers = 0
+    total_states = 0
+
+    async with session_factory() as session:
+        async with session.begin():
+            for s in items:
+                sid = s.get("id")
+                if not sid:
+                    continue
+                name = s.get("name")
+                deleted = s.get("deleted")
+
+                sticker = await session.get(StringSticker, sid)
+                if sticker is None:
+                    sticker = StringSticker(id=sid, name=name or "", deleted=deleted)
+                    session.add(sticker)
+                else:
+                    sticker.name = name or ""
+                    sticker.deleted = deleted
+
+                total_stickers += 1
+
+                states = s.get("states") or []
+                seen_state_ids: set[str] = set()
+                for st in states:
+                    if not isinstance(st, dict):
+                        continue
+                    st_id = st.get("id")
+                    if not st_id:
+                        continue
+                    seen_state_ids.add(st_id)
+                    st_name = st.get("name") or ""
+
+                    state_obj = await session.get(StringState, st_id)
+                    if state_obj is None:
+                        state_obj = StringState(
+                            id=st_id,
+                            sticker_id=sid,
+                            name=st_name,
+                        )
+                        session.add(state_obj)
+                    else:
+                        state_obj.sticker_id = sid
+                        state_obj.name = st_name
+
+                    total_states += 1
+
+                if seen_state_ids:
+                    res = await session.execute(
+                        select(StringState.id).where(StringState.sticker_id == sid)
+                    )
+                    local_ids = {row[0] for row in res.all()}
+                    stale_ids = local_ids - seen_state_ids
+                    if stale_ids:
+                        await session.execute(
+                            delete(StringState).where(StringState.id.in_(list(stale_ids)))
                         )
 
     return {

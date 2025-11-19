@@ -10,9 +10,11 @@ from typing import Any, Dict
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
-from src.config import settings
-from src.localdb.session import init_engine, async_engine, Base, async_session
-from src.localdb.models import WebhookEvent
+from src.core.client import YouGileClient
+from src.core import auth as core_auth
+from src.api import webhooks as api_webhooks
+from . import db
+from .models import WebhookEvent
 
 app = FastAPI(title="YouGile Webhook Debug Server")
 
@@ -54,14 +56,68 @@ logger = _setup_logger()
 
 
 @app.on_event("startup")
-async def init_local_db() -> None:
-    db_url = getattr(settings, "yougile_local_db_url", None) or "sqlite+aiosqlite:///yougile_local.db"
-    init_engine(db_url)
-    if async_engine is not None:
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+async def init_webhook_db() -> None:
+    """Инициализация отдельной БД для хранения событий вебхуков."""
+    db_url = (
+        os.environ.get("YOUGILE_WEBHOOK_DB_URL")
+        or "sqlite+aiosqlite:///data/yougile_webhooks.db"
+    )
+    db.init_engine(db_url)
+    if db.async_engine is not None:
+        async with db.async_engine.begin() as conn:
+            await conn.run_sync(db.Base.metadata.create_all)
+        logger.info(f"Webhook DB initialized at {db_url}")
     else:
         logger.error("async_engine is not initialized after init_engine call")
+        return
+
+    # После инициализации БД пробуем проверить наличие подписки на вебхуки
+    public_url = os.environ.get("YOUGILE_WEBHOOK_PUBLIC_URL")
+    if not public_url:
+        logger.info("YOUGILE_WEBHOOK_PUBLIC_URL is not set; skipping webhook subscription check")
+        return
+
+    api_key = (
+        os.environ.get("YOUGILE_API_KEY")
+        or os.environ.get("yougile_api_key")
+    )
+    company_id = (
+        os.environ.get("YOUGILE_COMPANY_ID")
+        or os.environ.get("yougile_company_id")
+    )
+    if not api_key or not company_id:
+        logger.warning("Cannot check webhook subscription: YOUGILE_API_KEY/YOUGILE_COMPANY_ID are not configured")
+        return
+
+    try:
+        core_auth.auth_manager.set_credentials(api_key, company_id)
+    except Exception as e:
+        logger.warning(f"Failed to set auth credentials for webhook check: {e}")
+        return
+
+    try:
+        async with YouGileClient(core_auth.auth_manager) as client:
+            hooks = await api_webhooks.get_webhooks(client, include_deleted=False)
+        if isinstance(hooks, dict) and "content" in hooks:
+            hooks = hooks.get("content", [])
+        exists = False
+        for h in hooks or []:
+            if not isinstance(h, dict):
+                continue
+            if h.get("deleted"):
+                continue
+            if h.get("url") == public_url:
+                exists = True
+                break
+        if exists:
+            logger.info(f"Webhook subscription for {public_url} is present")
+        else:
+            logger.warning(
+                f"No active webhook subscription for {public_url}. "
+                "Use CLI 'python -m cli webhooks create --url ... --event task-*' to register."
+            )
+    except Exception as e:
+        logger.warning(f"Failed to check webhook subscriptions: {e}")
 
 
 def _log(msg: str) -> None:
@@ -148,9 +204,10 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
 
     logger.info(json.dumps(_sanitize(payload), ensure_ascii=False, indent=2))
 
+    # Сохраняем событие в отдельную БД вебхуков
     try:
-        if async_session is not None:
-            async with async_session() as session:
+        if db.async_session is not None:
+            async with db.async_session() as session:
                 entity_id = None
                 if isinstance(new, dict):
                     entity_id = new.get("id") or entity_id
@@ -176,7 +233,7 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
                 session.add(event)
                 await session.commit()
         else:
-            logger.warning("async_session is not initialized, skipping DB logging for webhook event")
+            logger.warning("async_session is not initialized for webhook DB, skipping event persistence")
     except Exception as e:
         logger.exception(f"Failed to persist webhook event: {e}")
 

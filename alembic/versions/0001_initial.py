@@ -26,6 +26,15 @@ def upgrade() -> None:
         sa.Column('description', sa.Text(), nullable=True),
     )
 
+    # departments
+    op.create_table(
+        'departments',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=True),
+        sa.Column('parent_id', sa.String(length=64), nullable=True),
+        sa.Column('deleted', sa.Boolean(), nullable=True),
+    )
+
     # boards
     op.create_table(
         'boards',
@@ -85,31 +94,61 @@ def upgrade() -> None:
         sa.Column('timestamp', sa.DateTime(), nullable=False),
     )
 
-    # webhook_events
+    # sprint_stickers
     op.create_table(
-        'webhook_events',
-        sa.Column('id', sa.Integer(), primary_key=True, nullable=False, autoincrement=True),
-        sa.Column('source', sa.String(length=32), nullable=False),
-        sa.Column('event_type', sa.String(length=128), nullable=True),
-        sa.Column('entity_type', sa.String(length=64), nullable=True),
-        sa.Column('entity_id', sa.String(length=64), nullable=True),
-        sa.Column('event_external_id', sa.String(length=128), nullable=True),
-        sa.Column('received_at', sa.DateTime(), nullable=False),
-        sa.Column('processed', sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column('processed_at', sa.DateTime(), nullable=True),
-        sa.Column('retry_count', sa.Integer(), nullable=False, server_default='0'),
-        sa.Column('error', sa.Text(), nullable=True),
-        sa.Column('payload', sa.JSON(), nullable=False),
-        sa.UniqueConstraint('event_external_id', name='uq_webhook_event_external_id'),
+        'sprint_stickers',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('deleted', sa.Boolean(), nullable=True),
+    )
+
+    # sprint_states
+    op.create_table(
+        'sprint_states',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('sticker_id', sa.String(length=64), sa.ForeignKey('sprint_stickers.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('begin', sa.DateTime(), nullable=True),
+        sa.Column('end', sa.DateTime(), nullable=True),
+    )
+
+    # string_stickers
+    op.create_table(
+        'string_stickers',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('deleted', sa.Boolean(), nullable=True),
+    )
+
+    # string_states
+    op.create_table(
+        'string_states',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('sticker_id', sa.String(length=64), sa.ForeignKey('string_stickers.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+    )
+
+    # project_roles
+    op.create_table(
+        'project_roles',
+        sa.Column('id', sa.String(length=64), primary_key=True, nullable=False),
+        sa.Column('project_id', sa.String(length=64), sa.ForeignKey('projects.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('name', sa.String(length=255), nullable=False),
+        sa.Column('permissions', sa.JSON(), nullable=True),
     )
 
 
 def downgrade() -> None:
-    op.drop_table('webhook_events')
+    op.drop_table('project_roles')
+    op.drop_table('string_states')
+    op.drop_table('string_stickers')
+    op.drop_table('sprint_states')
+    op.drop_table('sprint_stickers')
     op.drop_table('comments')
     op.drop_table('task_assignees')
     op.drop_table('tasks')
     op.drop_table('users')
     op.drop_table('columns')
     op.drop_table('boards')
+    op.drop_table('departments')
     op.drop_table('projects')

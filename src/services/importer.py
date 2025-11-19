@@ -15,10 +15,12 @@ from src.api import columns as api_columns
 from src.api import tasks as api_tasks
 from src.api import users as api_users
 from src.api import chats as api_chats
+from src.api import departments as api_departments
+from src.api import project_roles as api_roles
 
 from src.config import settings
 from src.localdb.session import Base, init_engine, make_sqlite_url
-from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment
+from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment, Department, ProjectRole
 
 
 async def _create_schema_if_needed() -> None:
@@ -143,12 +145,13 @@ async def import_project(
     init_engine(db_url)
     await _create_schema_if_needed()
 
-    # Опционально синхронизируем справочник спринтов
+    # Опционально синхронизируем справочники стикеров (спринты + string-stickers)
     if sync_sprints:
         try:
-            from src.services import sprints as sprints_service  # type: ignore
+            from src.services import stickers as stickers_service  # type: ignore
 
-            await sprints_service.sync_sprint_stickers(db_path=db_path)
+            await stickers_service.sync_sprint_stickers(db_path=db_path)
+            await stickers_service.sync_string_stickers(db_path=db_path)
         except Exception:
             # Не валим весь импорт проекта из-за проблем со спринтами
             pass
@@ -219,6 +222,20 @@ async def import_project(
                         "name": _norm_str(u.get("name") or u.get("firstName")) if isinstance(u.get("name") or u.get("firstName"), str) else u.get("email"),
                         "email": _norm_str(u.get("email")),
                         "role": _norm_str(u.get("role")),
+                    })
+
+            # Project roles
+            roles = await api_roles.get_project_roles(client, project_id)
+            async with session.begin():
+                for r in roles:
+                    rid = r.get("id")
+                    if not rid:
+                        continue
+                    await _upsert(session, ProjectRole, {
+                        "id": rid,
+                        "project_id": project_id,
+                        "name": _norm_str(r.get("name")) or "",
+                        "permissions": r.get("permissions"),
                     })
 
             # Tasks (project-wide pagination, filtered by columns)
@@ -352,13 +369,38 @@ async def import_all_projects(
     init_engine(db_url)
     await _create_schema_if_needed()
 
-    # Один раз синхронизируем справочник спринтов для всей компании
+    # Один раз синхронизируем справочники стикеров (спринты + string-stickers) и отделы для всей компании
     try:
-        from src.services import sprints as sprints_service  # type: ignore
+        from src.services import stickers as stickers_service  # type: ignore
 
-        await sprints_service.sync_sprint_stickers(db_path=db_path)
+        await stickers_service.sync_sprint_stickers(db_path=db_path)
+        await stickers_service.sync_string_stickers(db_path=db_path)
     except Exception:
-        # Не останавливаем массовый импорт из-за неудачи с синком спринтов
+        # Не останавливаем массовый импорт из-за неудачи с синком справочников
+        pass
+
+    # Departments are company-wide, sync once
+    try:
+        from src.localdb.session import async_session as session_factory  # type: ignore
+
+        async with YouGileClient(core_auth.auth_manager) as client:
+            deps = await api_departments.get_departments(client)
+
+        if session_factory is not None:
+            async with session_factory() as session:
+                async with session.begin():
+                    for d in deps:
+                        did = d.get("id")
+                        if not did:
+                            continue
+                        await _upsert(session, Department, {
+                            "id": did,
+                            "name": _norm_str(d.get("name")),
+                            "parent_id": d.get("parentId"),
+                            "deleted": d.get("deleted"),
+                        })
+    except Exception:
+        # Не останавливаем импорт, если департаменты не удалось синхронизировать
         pass
 
     summary: Dict[str, Any] = {

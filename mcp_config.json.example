@@ -2,7 +2,7 @@
   "mcpServers": {
     "yougile": {
       "command": "python",
-      "args": ["/полный/путь/к/папке/yougile-mcp/run_server.py"],
+      "args": ["/полный/путь/к/папке/yougile-mcp/run_mcp_server.py"],
       "cwd": "/полный/путь/к/папке/yougile-mcp",
       "env": {
         "PATH": "/полный/путь/к/папке/yougile-mcp/venv/bin:$PATH",

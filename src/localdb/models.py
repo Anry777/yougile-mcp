@@ -19,6 +19,15 @@ class Project(Base):
     boards: Mapped[List["Board"]] = relationship("Board", back_populates="project", cascade="all, delete-orphan")
 
 
+class Department(Base):
+    __tablename__ = "departments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    deleted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+
 class Board(Base):
     __tablename__ = "boards"
 
@@ -101,27 +110,6 @@ class Comment(Base):
     author: Mapped[Optional["User"]] = relationship("User", back_populates="comments")
 
 
-class WebhookEvent(Base):
-    __tablename__ = "webhook_events"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source: Mapped[str] = mapped_column(String(32))
-    event_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    entity_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    entity_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    event_external_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    processed: Mapped[bool] = mapped_column(Boolean, default=False)
-    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    payload: Mapped[dict] = mapped_column(JSON)
-
-    __table_args__ = (
-        UniqueConstraint("event_external_id", name="uq_webhook_event_external_id"),
-    )
-
-
 class SprintSticker(Base):
     __tablename__ = "sprint_stickers"
 
@@ -146,3 +134,38 @@ class SprintState(Base):
     end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     sticker: Mapped["SprintSticker"] = relationship("SprintSticker", back_populates="states")
+
+
+class StringSticker(Base):
+    __tablename__ = "string_stickers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    deleted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    states: Mapped[List["StringState"]] = relationship(
+        "StringState", back_populates="sticker", cascade="all, delete-orphan"
+    )
+
+
+class StringState(Base):
+    __tablename__ = "string_states"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sticker_id: Mapped[str] = mapped_column(
+        ForeignKey("string_stickers.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255))
+
+    sticker: Mapped["StringSticker"] = relationship("StringSticker", back_populates="states")
+
+
+class ProjectRole(Base):
+    __tablename__ = "project_roles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(255))
+    permissions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    project: Mapped["Project"] = relationship("Project")

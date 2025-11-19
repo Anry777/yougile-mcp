@@ -545,7 +545,7 @@ def main(argv=None):
                         print(json.dumps(r.get("stickers"), ensure_ascii=False, indent=2))
             elif args.db_cmd == "sync-sprints":
                 try:
-                    from src.services import sprints as sprints_service
+                    from src.services import stickers as stickers_service
                 except ModuleNotFoundError as exc:
                     missing = exc.name or "required dependencies"
                     print(
@@ -554,7 +554,7 @@ def main(argv=None):
                     )
                     sys.exit(1)
 
-                result = await sprints_service.sync_sprint_stickers(
+                result = await stickers_service.sync_sprint_stickers(
                     db_path=getattr(args, "db_path", "./yougile_local.db"),
                 )
                 if getattr(args, "json", False):
