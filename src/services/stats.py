@@ -5,8 +5,8 @@ from datetime import datetime
 
 from sqlalchemy import select, func, case
 
-from src.localdb.session import init_engine, async_session, make_sqlite_url
-from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment, WebhookEvent
+from src.localdb.session import init_engine, async_session
+from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment
 from src.config import settings
 
 
@@ -20,12 +20,13 @@ async def _ensure_engine(db_path: str | None = None) -> None:
     if async_engine is not None:
         return
 
+    # db_path is treated as full DB URL override; otherwise use settings.yougile_local_db_url
     if db_path and db_path != "./yougile_local.db":
-        db_url = make_sqlite_url(db_path)
+        db_url = db_path
     elif getattr(settings, "yougile_local_db_url", None):
         db_url = settings.yougile_local_db_url
     else:
-        db_url = make_sqlite_url("./yougile_local.db")
+        raise RuntimeError("Database URL is not configured")
     init_engine(db_url)
 
 
@@ -48,7 +49,7 @@ async def get_db_stats(db_path: str | None = None) -> Dict[str, Any]:
         user_count = (await session.execute(select(func.count(User.id)))).scalar_one()
         task_count = (await session.execute(select(func.count(Task.id)))).scalar_one()
         comment_count = (await session.execute(select(func.count(Comment.id)))).scalar_one()
-        webhook_count = (await session.execute(select(func.count(WebhookEvent.id)))).scalar_one()
+        # webhook_events хранятся в отдельной БД вебхуков; здесь считаем только локальные сущности
 
         # Top projects by task count
         top_projects_raw = (
@@ -147,7 +148,6 @@ async def get_db_stats(db_path: str | None = None) -> Dict[str, Any]:
         "users": user_count,
         "tasks": task_count,
         "comments": comment_count,
-        "webhook_events": webhook_count,
         "tasks_completed": completed_count,
         "tasks_active": active_count,
         "tasks_archived": archived_count,

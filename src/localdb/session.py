@@ -15,16 +15,6 @@ async_engine: AsyncEngine | None = None
 async_session: async_sessionmaker[AsyncSession] | None = None
 
 
-def make_sqlite_url(db_path: str) -> str:
-    # Use file path; for in-memory use: 'sqlite+aiosqlite://'
-    if db_path.startswith("sqlite+"):
-        return db_path
-    if db_path.startswith("file:"):
-        # already URI
-        return f"sqlite+aiosqlite:///{db_path}"
-    return f"sqlite+aiosqlite:///{db_path}"
-
-
 def init_engine(db_url: str) -> AsyncEngine:
     global async_engine, async_session
     async_engine = create_async_engine(db_url, echo=False, future=True)

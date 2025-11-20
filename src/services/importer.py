@@ -19,7 +19,7 @@ from src.api import departments as api_departments
 from src.api import project_roles as api_roles
 
 from src.config import settings
-from src.localdb.session import Base, init_engine, make_sqlite_url
+from src.localdb.session import Base, init_engine
 from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment, Department, ProjectRole
 
 
@@ -135,13 +135,13 @@ async def import_project(
     prune: bool = False,
     sync_sprints: bool = False,
 ) -> Dict[str, Any]:
-    # Init DB
+    # Init DB (db_path is treated as full DB URL override; otherwise use settings.yougile_local_db_url)
     if db_path and db_path != "./yougile_local.db":
-        db_url = make_sqlite_url(db_path)
+        db_url = db_path
     elif getattr(settings, "yougile_local_db_url", None):
         db_url = settings.yougile_local_db_url
     else:
-        db_url = make_sqlite_url(db_path)
+        raise RuntimeError("Database URL is not configured")
     init_engine(db_url)
     await _create_schema_if_needed()
 
@@ -359,13 +359,13 @@ async def import_all_projects(
     Reuses import_project for each project. DB URL is resolved the same way as in import_project
     (explicit db_path has priority over YOUGILE_LOCAL_DB_URL).
     """
-    # Init DB once
+    # Init DB once (db_path is treated as full DB URL override; otherwise use settings.yougile_local_db_url)
     if db_path and db_path != "./yougile_local.db":
-        db_url = make_sqlite_url(db_path)
+        db_url = db_path
     elif getattr(settings, "yougile_local_db_url", None):
         db_url = settings.yougile_local_db_url
     else:
-        db_url = make_sqlite_url(db_path)
+        raise RuntimeError("Database URL is not configured")
     init_engine(db_url)
     await _create_schema_if_needed()
 

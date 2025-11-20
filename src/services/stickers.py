@@ -9,7 +9,7 @@ from src.api import stickers as api_stickers
 from src.core import auth as core_auth
 from src.core.client import YouGileClient
 from src.config import settings
-from src.localdb.session import init_engine, make_sqlite_url, async_engine, Base
+from src.localdb.session import init_engine, async_engine, Base
 from src.localdb.models import SprintSticker, SprintState, StringSticker, StringState
 
 
@@ -41,13 +41,13 @@ async def sync_sprint_stickers(db_path: str = "./yougile_local.db") -> Dict[str,
     4. Делает upsert sprint_stickers и sprint_states, очищая удалённые состояния.
     """
 
-    # URL БД
+    # URL БД: db_path трактуем как полный URL БД; иначе используем settings.yougile_local_db_url
     if db_path and db_path != "./yougile_local.db":
-        db_url = make_sqlite_url(db_path)
+        db_url = db_path
     elif getattr(settings, "yougile_local_db_url", None):
         db_url = settings.yougile_local_db_url
     else:
-        db_url = make_sqlite_url(db_path)
+        raise RuntimeError("Database URL is not configured")
 
     init_engine(db_url)
     # гарантируем наличие таблиц (на случай запуска без alembic)

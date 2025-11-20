@@ -24,9 +24,16 @@ class Settings(BaseSettings):
     yougile_max_retries: int = 3
     yougile_rate_limit_per_minute: int = 25
     
-    # Local database URL (SQLite by default)
-    yougile_local_db_url: str = "sqlite+aiosqlite:///data/yougile_local.db"
+    # Local database URL (PostgreSQL by default; override via YOUGILE_LOCAL_DB_URL)
+    yougile_local_db_url: str = "postgresql+asyncpg://yougile:yougile@localhost/yougile"
     
+    # Webhook server settings (optional)
+    yougile_webhook_host: Optional[str] = None
+    yougile_webhook_port: Optional[int] = None
+    yougile_webhook_public_url: Optional[str] = None
+    yougile_webhook_reload: Optional[int] = None
+    yougile_webhook_db_url: Optional[str] = None
+
     # MCP server settings
     server_name: str = "YouGile MCP Server"
     server_version: str = "1.0.0"

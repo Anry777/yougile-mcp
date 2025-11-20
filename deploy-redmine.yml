@@ -1,0 +1,134 @@
+---
+- name: Deploy Redmine to Debian 12 VPS
+  hosts: redmine
+  become: true
+  gather_facts: true
+
+  collections:
+    - community.general   # для ufw
+
+  vars:
+    deploy_user: deploy
+    deploy_user_home: "/home/{{ deploy_user }}"
+    reverse_proxy_ip: "10.1.2.62"          # IP сервера с nginx
+    redmine_repo_url: "git@github.com/ORG/REPO.git"   # ЗАМЕНИ НА СВОЙ
+    redmine_repo_version: "main"           # или нужную ветку
+    redmine_repo_dest: "{{ deploy_user_home }}/apps/redmine"
+
+  tasks:
+    - name: Ensure base packages installed
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - ufw
+          - ca-certificates
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Ensure docker apt key exists (gpg dearmor)
+      ansible.builtin.shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg | \
+          gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/docker.list
+        content: |
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install Docker engine and compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure docker service enabled and started
+      ansible.builtin.service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Ensure deploy user exists
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        shell: /bin/bash
+        create_home: true
+
+    - name: Ensure deploy user is in docker group
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        groups: docker
+        append: true
+
+    - name: Ensure apps directory exists
+      ansible.builtin.file:
+        path: "{{ deploy_user_home }}/apps"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0755"
+
+    # Предполагается, что SSH-ключ для доступа к приватному репо уже настроен у пользователя deploy
+    - name: Checkout Redmine repo
+      ansible.builtin.git:
+        repo: "{{ redmine_repo_url }}"
+        dest: "{{ redmine_repo_dest }}"
+        version: "{{ redmine_repo_version }}"
+        update: true
+        accept_hostkey: true
+      become_user: "{{ deploy_user }}"
+
+    - name: Ensure data directories exist
+      ansible.builtin.file:
+        path: "{{ redmine_repo_dest }}/{{ item }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0755"
+      loop:
+        - plugins
+        - themes
+        - redmine_files
+        - postgres_data
+
+    - name: Configure UFW - allow SSH
+      community.general.ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Configure UFW - allow Redmine port from reverse proxy only
+      community.general.ufw:
+        rule: allow
+        proto: tcp
+        port: "3000"
+        src: "{{ reverse_proxy_ip }}"
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+    - name: Run docker compose pull
+      ansible.builtin.command: docker compose pull
+      args:
+        chdir: "{{ redmine_repo_dest }}"
+      become_user: "{{ deploy_user }}"
+
+    - name: Run docker compose up -d
+      ansible.builtin.command: docker compose up -d
+      args:
+        chdir: "{{ redmine_repo_dest }}"
+      become_user: "{{ deploy_user }}"

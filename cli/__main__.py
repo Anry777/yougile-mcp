@@ -148,6 +148,14 @@ def main(argv=None):
     wh_upd.add_argument("--deleted", action="store_true", help="Mark webhook as deleted")
     wh_upd.add_argument("--restore", action="store_true", help="Restore webhook (deleted=false)")
     wh_upd.add_argument("--json", action="store_true", help="Output JSON")
+    
+    # webhooks catch-up
+    wh_catchup = wh_sub.add_parser("catch-up", help="Process unprocessed webhook events (catch-up sync)")
+    wh_catchup.add_argument("--db", dest="db_path", type=str, default=None, help="Local DB URL (default: YOUGILE_LOCAL_DB_URL)")
+    wh_catchup.add_argument("--webhook-db", dest="webhook_db_path", type=str, default=None, help="Webhook DB URL (default: YOUGILE_WEBHOOK_DB_URL)")
+    wh_catchup.add_argument("--since", type=str, default=None, help="ISO timestamp: only process events received after this time")
+    wh_catchup.add_argument("--no-mark-processed", dest="no_mark_processed", action="store_true", help="Do not mark events as processed (dry-run mode)")
+    wh_catchup.add_argument("--json", action="store_true", help="Output JSON")
 
     auth_parser = subparsers.add_parser("auth", help="Authentication utilities")
     auth_parser.add_argument("--json", action="store_true", help="Output JSON")
@@ -438,6 +446,52 @@ def main(argv=None):
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:
                     print(f"Updated webhook: {result}")
+            elif args.webhooks_cmd == "catch-up":
+                from webhooks import consumer as webhook_consumer
+                from datetime import datetime as dt
+                
+                # Resolve DB URLs with defaults
+                _load_basic_env()
+                local_db_url = args.db_path or os.environ.get("YOUGILE_LOCAL_DB_URL") or (
+                    getattr(settings, "yougile_local_db_url", None) if settings else None
+                )
+                webhook_db_url = args.webhook_db_path or os.environ.get("YOUGILE_WEBHOOK_DB_URL") or (
+                    getattr(settings, "yougile_webhook_db_url", None) if settings else None
+                )
+                
+                if not webhook_db_url:
+                    print("Error: YOUGILE_WEBHOOK_DB_URL is required for catch-up (set in .env or pass --webhook-db)", file=sys.stderr)
+                    sys.exit(1)
+                
+                # Parse --since if provided
+                since_dt = None
+                if args.since:
+                    try:
+                        since_dt = dt.fromisoformat(args.since)
+                    except ValueError:
+                        print(f"Error: --since must be ISO format datetime, got: {args.since}", file=sys.stderr)
+                        sys.exit(1)
+                
+                mark_processed = not getattr(args, "no_mark_processed", False)
+                
+                result = await webhook_consumer.catch_up(
+                    webhook_db_url=webhook_db_url,
+                    local_db_url=local_db_url,
+                    since=since_dt,
+                    mark_processed=mark_processed,
+                )
+                
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    print(f"Catch-up complete:")
+                    print(f"  Examined:  {result.get('examined')}")
+                    print(f"  Processed: {result.get('processed')}")
+                    print(f"  Errors:    {result.get('errors')}")
+                    if result.get("error_details"):
+                        print("  Error details:")
+                        for err in result.get("error_details", []):
+                            print(f"    Event #{err.get('event_id')}: {err.get('error')}")
         elif args.command == "projects":
             if args.projects_cmd == "list":
                 result = await projects_cmd.list_projects()
