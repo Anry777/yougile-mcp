@@ -329,7 +329,8 @@ async def import_project(
                             "task_id": tid,
                             "author_id": author_id if isinstance(author_id, str) else None,
                             "text": str(text),
-                            "timestamp": _to_dt(ts) or datetime.now(timezone.utc),
+                            # _to_dt уже приводит дату к naive UTC; fallback также даём naive UTC
+                            "timestamp": _to_dt(ts) or datetime.utcnow(),
                         })
 
             # Prune (optional): remove local entities of project not present remotely
