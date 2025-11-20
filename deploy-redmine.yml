@@ -24,6 +24,7 @@
           - ufw
           - ca-certificates
           - gnupg
+          - procps
         state: present
         update_cache: true
 
