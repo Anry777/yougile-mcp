@@ -8,10 +8,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "Обновление списка пакетов..."
-apt-get update -y
+apt update -y
 
 echo "Установка базовых зависимостей..."
-apt-get install -y \
+apt install -y \
   software-properties-common \
   ca-certificates \
   python3 \
@@ -20,7 +20,7 @@ apt-get install -y \
   sshpass
 
 echo "Установка Ansible..."
-apt-get install -y ansible
+apt install -y ansible
 
 echo "Проверка установки..."
 ansible --version || {

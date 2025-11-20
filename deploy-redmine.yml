@@ -1,7 +1,6 @@
 ---
 - name: Deploy yougile-mcp to Debian 12 VPS
   hosts: yougile_mcp
-  become: true
   gather_facts: true
 
   collections:
@@ -11,6 +10,7 @@
     deploy_user: deploy
     deploy_user_home: "/home/{{ deploy_user }}"
     reverse_proxy_ip: "10.1.2.62"          # IP сервера с nginx
+    app_manage_repo: false                  # если true, плейбук сам будет делать git checkout
     app_repo_url: "git@github.com:Anry777/yougile-mcp.git"   # репозиторий yougile-mcp
     app_repo_version: "main"           # или нужную ветку
     app_repo_dest: "{{ deploy_user_home }}/apps/yougile-mcp"
@@ -105,15 +105,6 @@
     - name: Show public SSH key for GitHub
       ansible.builtin.debug:
         msg: "Public SSH key for GitHub (add this to your GitHub SSH keys): {{ deploy_ssh_pub_raw.content | b64decode | trim }}"
-
-    - name: Checkout project repo (yougile-mcp)
-      ansible.builtin.git:
-        repo: "{{ app_repo_url }}"
-        dest: "{{ app_repo_dest }}"
-        version: "{{ app_repo_version }}"
-        update: true
-        accept_hostkey: true
-      become_user: "{{ deploy_user }}"
 
     - name: Ensure data directories exist
       ansible.builtin.file:
