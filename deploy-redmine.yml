@@ -126,49 +126,18 @@
         mode: "0755"
       loop:
         - logs
+      when: app_manage_repo
 
-    - name: Check if /sbin/sysctl is a symlink
-      ansible.builtin.stat:
-        path: /sbin/sysctl
-      register: sysctl_stat
+    - name: Configure UFW (reset, defaults, rules)
+      ansible.builtin.shell: |
+        set -e
+        /usr/sbin/ufw --force reset
+        /usr/sbin/ufw default deny incoming
+        /usr/sbin/ufw default allow outgoing
+        /usr/sbin/ufw logging on
+        /usr/sbin/ufw limit OpenSSH 2>/dev/null || \
+        /usr/sbin/ufw limit ssh 2>/dev/null || \
+        /usr/sbin/ufw limit 22/tcp
+        /usr/sbin/ufw allow proto tcp from {{ reverse_proxy_ip }} to any port 5533
+        /usr/sbin/ufw --force enable
 
-    - name: Remove /sbin/sysctl if it's a regular file
-      ansible.builtin.file:
-        path: /sbin/sysctl
-        state: absent
-      when: sysctl_stat.stat.exists and not sysctl_stat.stat.islnk
-
-    - name: Create symlink for sysctl
-      ansible.builtin.file:
-        src: /usr/sbin/sysctl
-        dest: /sbin/sysctl
-        state: link
-      when: not sysctl_stat.stat.exists or not sysctl_stat.stat.islnk
-
-    - name: Configure UFW - allow SSH
-      community.general.ufw:
-        rule: allow
-        name: OpenSSH
-
-    - name: Configure UFW - allow webhook port from reverse proxy only
-      community.general.ufw:
-        rule: allow
-        proto: tcp
-        port: "5533"
-        src: "{{ reverse_proxy_ip }}"
-
-    - name: Enable UFW
-      community.general.ufw:
-        state: enabled
-
-    - name: Run docker compose pull
-      ansible.builtin.command: docker compose pull
-      args:
-        chdir: "{{ app_repo_dest }}"
-      become_user: "{{ deploy_user }}"
-
-    - name: Run docker compose up -d
-      ansible.builtin.command: docker compose up -d
-      args:
-        chdir: "{{ app_repo_dest }}"
-      become_user: "{{ deploy_user }}"

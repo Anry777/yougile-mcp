@@ -22,6 +22,8 @@ apt install -y \
 echo "Установка Ansible..."
 apt install -y ansible
 
+ansible-galaxy collection install community.general
+
 echo "Проверка установки..."
 ansible --version || {
   echo "Ansible не установлен или не найден в PATH." >&2
