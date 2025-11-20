@@ -1,6 +1,6 @@
 ---
-- name: Deploy Redmine to Debian 12 VPS
-  hosts: redmine
+- name: Deploy yougile-mcp to Debian 12 VPS
+  hosts: yougile_mcp
   become: true
   gather_facts: true
 
@@ -11,9 +11,9 @@
     deploy_user: deploy
     deploy_user_home: "/home/{{ deploy_user }}"
     reverse_proxy_ip: "10.1.2.62"          # IP сервера с nginx
-    redmine_repo_url: "git@github.com/ORG/REPO.git"   # ЗАМЕНИ НА СВОЙ
-    redmine_repo_version: "main"           # или нужную ветку
-    redmine_repo_dest: "{{ deploy_user_home }}/apps/redmine"
+    app_repo_url: "git@github.com:Anry777/yougile-mcp.git"   # репозиторий yougile-mcp
+    app_repo_version: "main"           # или нужную ветку
+    app_repo_dest: "{{ deploy_user_home }}/apps/yougile-mcp"
 
   tasks:
     - name: Ensure base packages installed
@@ -82,39 +82,59 @@
         group: "{{ deploy_user }}"
         mode: "0755"
 
-    # Предполагается, что SSH-ключ для доступа к приватному репо уже настроен у пользователя deploy
-    - name: Checkout Redmine repo
+    - name: Ensure .ssh directory exists for deploy user
+      ansible.builtin.file:
+        path: "{{ deploy_user_home }}/.ssh"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0700"
+
+    - name: Generate SSH key for deploy user if not exists
+      ansible.builtin.command: >-
+        ssh-keygen -t ed25519 -N "" -f {{ deploy_user_home }}/.ssh/id_ed25519
+      args:
+        creates: "{{ deploy_user_home }}/.ssh/id_ed25519"
+      become_user: "{{ deploy_user }}"
+
+    - name: Read public SSH key for deploy user
+      ansible.builtin.slurp:
+        src: "{{ deploy_user_home }}/.ssh/id_ed25519.pub"
+      register: deploy_ssh_pub_raw
+
+    - name: Show public SSH key for GitHub
+      ansible.builtin.debug:
+        msg: "Public SSH key for GitHub (add this to your GitHub SSH keys): {{ deploy_ssh_pub_raw.content | b64decode | trim }}"
+
+    - name: Checkout project repo (yougile-mcp)
       ansible.builtin.git:
-        repo: "{{ redmine_repo_url }}"
-        dest: "{{ redmine_repo_dest }}"
-        version: "{{ redmine_repo_version }}"
+        repo: "{{ app_repo_url }}"
+        dest: "{{ app_repo_dest }}"
+        version: "{{ app_repo_version }}"
         update: true
         accept_hostkey: true
       become_user: "{{ deploy_user }}"
 
     - name: Ensure data directories exist
       ansible.builtin.file:
-        path: "{{ redmine_repo_dest }}/{{ item }}"
+        path: "{{ app_repo_dest }}/{{ item }}"
         state: directory
         owner: "{{ deploy_user }}"
         group: "{{ deploy_user }}"
         mode: "0755"
       loop:
-        - plugins
-        - themes
-        - redmine_files
-        - postgres_data
+        - logs
 
     - name: Configure UFW - allow SSH
       community.general.ufw:
         rule: allow
         name: OpenSSH
 
-    - name: Configure UFW - allow Redmine port from reverse proxy only
+    - name: Configure UFW - allow webhook port from reverse proxy only
       community.general.ufw:
         rule: allow
         proto: tcp
-        port: "3000"
+        port: "5533"
         src: "{{ reverse_proxy_ip }}"
 
     - name: Enable UFW
@@ -124,11 +144,11 @@
     - name: Run docker compose pull
       ansible.builtin.command: docker compose pull
       args:
-        chdir: "{{ redmine_repo_dest }}"
+        chdir: "{{ app_repo_dest }}"
       become_user: "{{ deploy_user }}"
 
     - name: Run docker compose up -d
       ansible.builtin.command: docker compose up -d
       args:
-        chdir: "{{ redmine_repo_dest }}"
+        chdir: "{{ app_repo_dest }}"
       become_user: "{{ deploy_user }}"

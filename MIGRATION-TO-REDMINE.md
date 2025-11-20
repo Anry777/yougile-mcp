@@ -175,3 +175,41 @@ Event #123 processed successfully
 2. **Сценарий одноразовой миграции в Redmine**:
    - экспорт из локальной БД `yougile` в Redmine (проекты, задачи, пользователи и т.д.),
    - временный период совместной работы по вебхукам до окончательного перехода.
+
+---
+
+## Деплой yougile-mcp на VPS через Ansible (черновик)
+
+Исходные файлы:
+
+- `inventory.ini` — описывает VPS с yougile-mcp:
+
+  ```ini
+  [yougile_mcp]
+  yougile-mcp-vps ansible_host=10.1.2.124 ansible_user=root
+  ```
+
+- `deploy-redmine.yml` — плейбук деплоя yougile-mcp (название файла историческое).
+
+### Шаги деплоя
+
+1. Установить Ansible на локальную машину (см. скрипт `install-ansible.sh` в корне репозитория).
+2. Убедиться, что по SSH можно зайти на VPS:
+
+   ```bash
+   ssh root@10.1.2.124
+   ```
+
+3. Запустить плейбук из корня репозитория:
+
+   ```bash
+   ansible-playbook -i inventory.ini deploy-redmine.yml
+   ```
+
+При первом запуске плейбук:
+
+- поставит Docker и зависимости на VPS,
+- создаст пользователя `deploy` и структуру каталогов,
+- сгенерирует для `deploy` SSH-ключ (`~deploy/.ssh/id_ed25519`) и выведет публичный ключ в вывод Ansible,
+- склонирует репозиторий `yougile-mcp` в `/home/deploy/apps/yougile-mcp`,
+- выполнит `docker compose pull` и `docker compose up -d` в этом каталоге.
