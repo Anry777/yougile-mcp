@@ -7,7 +7,11 @@ from ..utils.validation import validate_uuid
 
 async def get_project_roles(client: YouGileClient, project_id: str) -> List[Dict[str, Any]]:
     """Get project roles."""
-    return await client.get(f"/projects/{validate_uuid(project_id, 'project_id')}/roles")
+    response = await client.get(f"/projects/{validate_uuid(project_id, 'project_id')}/roles")
+    # API может вернуть либо dict с ключом "content", либо сразу список ролей
+    if isinstance(response, dict) and "content" in response:
+        return response.get("content", [])
+    return response if isinstance(response, list) else []
 
 
 async def create_project_role(client: YouGileClient, project_id: str, role_data: Dict[str, Any]) -> Dict[str, Any]:

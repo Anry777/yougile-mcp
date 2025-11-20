@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+import logging
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,9 @@ from src.localdb.session import Base, init_engine
 from src.localdb.models import Project, Board, Column, User, Task, TaskAssignee, Comment, Department, ProjectRole
 
 
+logger = logging.getLogger(__name__)
+
+
 async def _create_schema_if_needed() -> None:
     # Create tables if they do not exist (first run). Alembic can manage later migrations.
     from src.localdb.session import async_engine
@@ -40,22 +44,30 @@ def _norm_str(s: Optional[str]) -> Optional[str]:
 def _to_dt(value: Any) -> Optional[datetime]:
     if value is None:
         return None
+    dt: Optional[datetime] = None
     try:
         # Milliseconds epoch
         if isinstance(value, (int, float)) and value > 10_000_000:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+            dt = datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+            
         # Seconds epoch
         if isinstance(value, (int, float)):
-            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            
         # ISO string
         if isinstance(value, str):
             try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
             except Exception:
                 return None
     except Exception:
         return None
-    return None
+    if dt is None:
+        return None
+    # Приводим к naive UTC (TIMESTAMP WITHOUT TIME ZONE в БД)
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 async def _upsert(session: AsyncSession, model, data: Dict[str, Any], pk_field: str = "id"):
@@ -75,6 +87,13 @@ async def _upsert(session: AsyncSession, model, data: Dict[str, Any], pk_field: 
 async def _upsert_task_assignee(session: AsyncSession, task_id: str, user_id: str) -> None:
     if not task_id or not user_id:
         return
+    # Ensure referenced user exists to satisfy FK constraint
+    existing_user = await session.get(User, user_id)
+    if existing_user is None:
+        # Create minimal stub user; детали (name/email/role) могут быть обновлены позже при синхронизации
+        logger.warning(f"Creating stub User for missing user_id={user_id} referenced from task {task_id}")
+        session.add(User(id=user_id, name=None, email=None, role=None))
+
     obj = await session.get(TaskAssignee, (task_id, user_id))
     if obj is None:
         session.add(TaskAssignee(task_id=task_id, user_id=user_id))
