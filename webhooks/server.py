@@ -60,8 +60,11 @@ async def init_webhook_db() -> None:
     """Инициализация отдельной БД для хранения событий вебхуков."""
     db_url = (
         os.environ.get("YOUGILE_WEBHOOK_DB_URL")
-        or "sqlite+aiosqlite:///data/yougile_webhooks.db"
+        or os.environ.get("YOUGILE_LOCAL_DB_URL")
     )
+    if not db_url:
+        logger.error("YOUGILE_WEBHOOK_DB_URL/YOUGILE_LOCAL_DB_URL are not configured; cannot initialize webhook DB")
+        return
     db.init_engine(db_url)
     if db.async_engine is not None:
         async with db.async_engine.begin() as conn:
@@ -98,24 +101,29 @@ async def init_webhook_db() -> None:
     try:
         async with YouGileClient(core_auth.auth_manager) as client:
             hooks = await api_webhooks.get_webhooks(client, include_deleted=False)
-        if isinstance(hooks, dict) and "content" in hooks:
-            hooks = hooks.get("content", [])
-        exists = False
-        for h in hooks or []:
-            if not isinstance(h, dict):
-                continue
-            if h.get("deleted"):
-                continue
-            if h.get("url") == public_url:
-                exists = True
-                break
-        if exists:
-            logger.info(f"Webhook subscription for {public_url} is present")
-        else:
-            logger.warning(
-                f"No active webhook subscription for {public_url}. "
-                "Use CLI 'python -m cli webhooks create --url ... --event task-*' to register."
-            )
+            if isinstance(hooks, dict) and "content" in hooks:
+                hooks = hooks.get("content", [])
+
+            exists = False
+            for h in hooks or []:
+                if not isinstance(h, dict):
+                    continue
+                if h.get("deleted"):
+                    continue
+                if h.get("url") == public_url:
+                    exists = True
+                    break
+
+            if exists:
+                logger.info(f"Webhook subscription for {public_url} is present")
+            else:
+                # Если активной подписки нет, создаём её автоматически на все события (pattern ".*")
+                try:
+                    payload = {"url": public_url, "event": ".*"}
+                    created = await api_webhooks.create_webhook(client, payload)
+                    logger.info(f"Created webhook subscription for {public_url} with all events: {created}")
+                except Exception as ce:
+                    logger.warning(f"Failed to create webhook subscription for {public_url}: {ce}")
     except Exception as e:
         logger.warning(f"Failed to check webhook subscriptions: {e}")
 
@@ -232,6 +240,16 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
                 )
                 session.add(event)
                 await session.commit()
+                
+                # Process event immediately (auto-sync)
+                event_id = event.id
+                logger.info(f"Processing event #{event_id} immediately...")
+                try:
+                    from webhooks.consumer import process_single_event
+                    await process_single_event(event_id)
+                    logger.info(f"Event #{event_id} processed successfully")
+                except Exception as proc_err:
+                    logger.error(f"Failed to auto-process event #{event_id}: {proc_err}")
         else:
             logger.warning("async_session is not initialized for webhook DB, skipping event persistence")
     except Exception as e:

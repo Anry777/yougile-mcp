@@ -17,7 +17,15 @@ async_session: async_sessionmaker[AsyncSession] | None = None
 def init_engine(db_url: str) -> AsyncEngine:
     """Initialize async engine and session factory for webhook DB."""
     global async_engine, async_session
-    async_engine = create_async_engine(db_url, echo=False, future=True)
+    async_engine = create_async_engine(
+        db_url,
+        echo=False,
+        future=True,
+        pool_pre_ping=True,  # Test connections before using them
+        pool_recycle=3600,   # Recycle connections after 1 hour
+        pool_size=10,
+        max_overflow=20,
+    )
     async_session = async_sessionmaker(async_engine, expire_on_commit=False)
     return async_engine
 
