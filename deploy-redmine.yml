@@ -28,6 +28,16 @@
         state: present
         update_cache: true
 
+    - name: Check UFW version
+      ansible.builtin.command: /usr/sbin/ufw --version
+      register: ufw_version
+      changed_when: false
+      failed_when: false
+
+    - name: Show UFW version
+      ansible.builtin.debug:
+        msg: "UFW version: {{ ufw_version.stdout | default('not installed or not in /usr/sbin') }}"
+
     - name: Ensure docker apt key exists (gpg dearmor)
       ansible.builtin.shell: |
         install -m 0755 -d /etc/apt/keyrings
@@ -116,6 +126,13 @@
         mode: "0755"
       loop:
         - logs
+
+    - name: Ensure sysctl exists where UFW expects it
+      ansible.builtin.file:
+        src: "/usr/sbin/sysctl"
+        dest: "/sbin/sysctl"
+        state: link
+      when: ansible_facts['os_family'] == 'Debian'
 
     - name: Configure UFW - allow SSH
       community.general.ufw:
