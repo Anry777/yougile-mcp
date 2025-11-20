@@ -127,12 +127,23 @@
       loop:
         - logs
 
-    - name: Ensure sysctl exists where UFW expects it
+    - name: Check if /sbin/sysctl is a symlink
+      ansible.builtin.stat:
+        path: /sbin/sysctl
+      register: sysctl_stat
+
+    - name: Remove /sbin/sysctl if it's a regular file
       ansible.builtin.file:
-        src: "/usr/sbin/sysctl"
-        dest: "/sbin/sysctl"
+        path: /sbin/sysctl
+        state: absent
+      when: sysctl_stat.stat.exists and not sysctl_stat.stat.islnk
+
+    - name: Create symlink for sysctl
+      ansible.builtin.file:
+        src: /usr/sbin/sysctl
+        dest: /sbin/sysctl
         state: link
-      when: ansible_facts['os_family'] == 'Debian'
+      when: not sysctl_stat.stat.exists or not sysctl_stat.stat.islnk
 
     - name: Configure UFW - allow SSH
       community.general.ufw:
