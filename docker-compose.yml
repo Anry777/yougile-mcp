@@ -19,13 +19,13 @@ services:
 
   db-init:
     build: .
-    command: ["bash", "/app/docker/db-init.sh"]
+    command: ["bash", "-lc", "/app/docker/db-init.sh && tail -f /dev/null"]
     environment:
       YOUGILE_LOCAL_DB_URL: "postgresql+asyncpg://yougile:yougile@db/yougile"
     depends_on:
       db:
         condition: service_healthy
-    restart: "no"
+    restart: always
 
   webhooks:
     build: .
