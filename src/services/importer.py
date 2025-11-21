@@ -274,6 +274,7 @@ async def import_project(
                         "column_id": t.get("columnId"),
                         "completed": t.get("completed"),
                         "archived": t.get("archived"),
+                        "deleted": t.get("deleted"),
                         "deadline": t.get("deadline"),
                         "time_tracking": t.get("timeTracking"),
                         "stickers": t.get("stickers"),

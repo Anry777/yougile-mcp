@@ -72,6 +72,8 @@ class Task(Base):
     completed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     archived: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
+    deleted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
     # Stickers and complex fields as JSON blobs for SQLite simplicity
     deadline: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     time_tracking: Mapped[Optional[dict]] = mapped_column("time_tracking", JSON, nullable=True)

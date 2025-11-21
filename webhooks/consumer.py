@@ -167,6 +167,7 @@ async def _upsert_task_from_payload(payload: Dict[str, Any], local_session: Asyn
         "column_id": payload.get("columnId"),
         "completed": payload.get("completed", False),
         "archived": payload.get("archived", False),
+        "deleted": payload.get("deleted"),
         "deadline": payload.get("deadline"),
         "time_tracking": payload.get("timeTracking"),
         "stickers": payload.get("stickers"),
