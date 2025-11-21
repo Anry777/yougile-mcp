@@ -15,5 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Ensure migration script is executable inside the container
+RUN chmod +x docker/db-init.sh
+
 # Default command (can be overridden)
 CMD ["python", "run_webhook_server.py"]
