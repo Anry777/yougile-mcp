@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional
 
 from sqlalchemy import String, Text, Integer, Boolean, DateTime, JSON, UniqueConstraint
@@ -18,7 +18,8 @@ class WebhookEvent(Base):
     entity_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     entity_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     event_external_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    event_timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # Original event time from Yougile
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)

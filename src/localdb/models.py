@@ -73,12 +73,33 @@ class Task(Base):
     archived: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     deleted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    # Stickers and complex fields as JSON blobs for SQLite simplicity
+    # Additional metadata from API
+    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    id_task_common: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    id_task_project: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    color: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    organization_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Complex fields as JSON blobs
     deadline: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     time_tracking: Mapped[Optional[dict]] = mapped_column("time_tracking", JSON, nullable=True)
     stickers: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     checklists: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    subtasks: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    links: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    blocked_points: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    contact_person_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    deal: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    stopwatch: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    timer: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    
+    # Full API payload for fields not explicitly mapped
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     column: Mapped[Optional["Column"]] = relationship("Column", back_populates="tasks")
     assignees: Mapped[List[User]] = relationship(

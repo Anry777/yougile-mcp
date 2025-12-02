@@ -275,10 +275,27 @@ async def import_project(
                         "completed": t.get("completed"),
                         "archived": t.get("archived"),
                         "deleted": t.get("deleted"),
+                        "created_at": _to_dt(t.get("createdAt") or t.get("timestamp")),
+                        "completed_at": _to_dt(t.get("completedAt") or t.get("completedTimestamp")),
+                        "archived_at": _to_dt(t.get("archivedAt") or t.get("archivedTimestamp")),
+                        "created_by": t.get("createdBy"),
+                        "id_task_common": t.get("idTaskCommon"),
+                        "id_task_project": t.get("idTaskProject"),
+                        "type": t.get("type"),
+                        "color": t.get("color"),
+                        "organization_id": t.get("organizationId"),
                         "deadline": t.get("deadline"),
                         "time_tracking": t.get("timeTracking"),
                         "stickers": t.get("stickers"),
                         "checklists": t.get("checklists"),
+                        "subtasks": t.get("subtasks"),
+                        "links": t.get("links"),
+                        "blocked_points": t.get("blockedPoints"),
+                        "contact_person_ids": t.get("contactPersonIds"),
+                        "deal": t.get("deal"),
+                        "stopwatch": t.get("stopwatch"),
+                        "timer": t.get("timer"),
+                        "payload": t,  # Store full API response
                     }
                     await _upsert(session, Task, data)
                 # Clear and set assignees for upserted tasks (enrich each task with full details to get reliable assignees)
@@ -293,6 +310,32 @@ async def import_project(
                     except Exception:
                         t_full = t
                     assigned = _extract_assigned_ids(t_full) or _extract_assigned_ids(t)
+                    # Update all fields with full payload if available
+                    full_updates = {
+                        "id": tid,
+                        "created_at": _to_dt(t_full.get("createdAt") or t_full.get("timestamp")),
+                        "completed_at": _to_dt(t_full.get("completedAt") or t_full.get("completedTimestamp")),
+                        "archived_at": _to_dt(t_full.get("archivedAt") or t_full.get("archivedTimestamp")),
+                        "created_by": t_full.get("createdBy"),
+                        "id_task_common": t_full.get("idTaskCommon"),
+                        "id_task_project": t_full.get("idTaskProject"),
+                        "type": t_full.get("type"),
+                        "color": t_full.get("color"),
+                        "organization_id": t_full.get("organizationId"),
+                        "deadline": t_full.get("deadline"),
+                        "time_tracking": t_full.get("timeTracking"),
+                        "stickers": t_full.get("stickers"),
+                        "checklists": t_full.get("checklists"),
+                        "subtasks": t_full.get("subtasks"),
+                        "links": t_full.get("links"),
+                        "blocked_points": t_full.get("blockedPoints"),
+                        "contact_person_ids": t_full.get("contactPersonIds"),
+                        "deal": t_full.get("deal"),
+                        "stopwatch": t_full.get("stopwatch"),
+                        "timer": t_full.get("timer"),
+                        "payload": t_full,  # Store full API response
+                    }
+                    await _upsert(session, Task, full_updates)
                     # delete existing links
                     await session.execute(delete(TaskAssignee).where(TaskAssignee.task_id == tid))
                     for uid in assigned:

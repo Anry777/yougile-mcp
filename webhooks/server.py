@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, UTC, timezone, timedelta
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -226,13 +226,33 @@ async def yougile_webhook(request: Request, x_webhook_secret: str | None = Heade
                     entity_type = new.get("entityType") or entity_type
                 if not entity_type and isinstance(payload, dict):
                     entity_type = payload.get("entityType")
+                
+                # Extract original event timestamp from payload
+                event_ts = None
+                if isinstance(payload, dict):
+                    ts_raw = payload.get("timestamp") or payload.get("createdAt")
+                    if ts_raw:
+                        try:
+                            if isinstance(ts_raw, (int, float)) and ts_raw > 10_000_000:
+                                event_ts = datetime.fromtimestamp(float(ts_raw) / 1000.0, tz=timezone.utc)
+                            elif isinstance(ts_raw, (int, float)):
+                                event_ts = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
+                            elif isinstance(ts_raw, str):
+                                event_ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                            # Convert to naive UTC for DB storage
+                            if event_ts and event_ts.tzinfo:
+                                event_ts = event_ts.astimezone(timezone.utc).replace(tzinfo=None)
+                        except Exception:
+                            pass
+                
                 event = WebhookEvent(
                     source="yougile",
                     event_type=evt if isinstance(evt, str) else None,
                     entity_type=entity_type,
                     entity_id=str(entity_id) if entity_id is not None else None,
                     event_external_id=None,
-                    received_at=datetime.utcnow(),
+                    event_timestamp=event_ts,
+                    received_at=datetime.now(UTC).replace(tzinfo=None),  # Store as naive UTC
                     processed=False,
                     retry_count=0,
                     error=None,
