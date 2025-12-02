@@ -20,15 +20,11 @@ if str(SRC_PATH) not in sys.path:
 
 from src.localdb.models import Board, Column, Comment, Project, Task, TaskAssignee, User  # noqa: E402
 
-# Import webhook models if available
+# Import webhook models if available (as package "webhooks")
 try:
-    import sys
-    WEBHOOKS_PATH = PROJECT_ROOT / "webhooks"
-    if str(WEBHOOKS_PATH) not in sys.path:
-        sys.path.insert(0, str(WEBHOOKS_PATH))
-    from models import WebhookEvent  # noqa: E402
+    from webhooks.models import WebhookEvent  # noqa: E402
     WEBHOOKS_AVAILABLE = True
-except ImportError:
+except Exception:
     WEBHOOKS_AVAILABLE = False
     WebhookEvent = None
 
@@ -81,7 +77,9 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
             )
         ).all()
 
-        since = datetime.now(UTC) - timedelta(days=days)
+        # Use naive UTC for comparison with TIMESTAMP WITHOUT TIME ZONE
+        now_utc_naive = datetime.now(UTC).replace(tzinfo=None)
+        since = now_utc_naive - timedelta(days=days)
         created_column = getattr(Task, "created_at", None)
         completed_column = getattr(Task, "completed_at", None)
 
@@ -123,8 +121,9 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
             stats["last_webhook_at"] = last_webhook[0] if last_webhook else None
             stats["last_webhook_type"] = last_webhook[1] if last_webhook else None
             
-            # Webhooks in last N days
-            since = datetime.now(UTC) - timedelta(days=days)
+            # Webhooks in last N days (naive UTC)
+            now_utc_naive = datetime.now(UTC).replace(tzinfo=None)
+            since = now_utc_naive - timedelta(days=days)
             stats["webhook_events_recent"] = (
                 await wh_session.execute(
                     select(func.count(WebhookEvent.id))
@@ -245,7 +244,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--webhook-db",
         dest="webhook_db_url",
-        default=os.environ.get("YOUGILE_WEBHOOK_DB_URL"),
+        default=os.environ.get(
+            "YOUGILE_WEBHOOK_DB_URL",
+            "postgresql+asyncpg://yougile:yougile@10.1.2.124:55432/yougile_webhooks",
+        ),
         help="Webhook database URL (optional, for webhook statistics)",
     )
     return parser.parse_args()
