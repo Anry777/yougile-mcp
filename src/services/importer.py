@@ -46,16 +46,18 @@ def _to_dt(value: Any) -> Optional[datetime]:
         return None
     dt: Optional[datetime] = None
     try:
-        # Milliseconds epoch
-        if isinstance(value, (int, float)) and value > 10_000_000:
-            dt = datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-            
-        # Seconds epoch
+        # Numeric epoch (seconds or milliseconds)
         if isinstance(value, (int, float)):
-            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
-            
+            v = float(value)
+            # Если значение слишком большое для секунд (например, 13-значный timestamp),
+            # считаем его миллисекундами.
+            if v > 10_000_000_000:  # ~ 2001-11-20 в секундах; всё большее разумно трактовать как ms
+                dt = datetime.fromtimestamp(v / 1000.0, tz=timezone.utc)
+            else:
+                dt = datetime.fromtimestamp(v, tz=timezone.utc)
+
         # ISO string
-        if isinstance(value, str):
+        elif isinstance(value, str):
             try:
                 dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
             except Exception:

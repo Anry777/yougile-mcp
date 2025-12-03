@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any, Dict
 
-from sqlalchemy import func, select, case
+from sqlalchemy import func, select, case, or_
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +82,7 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
         since = now_utc_naive - timedelta(days=days)
         created_column = getattr(Task, "created_at", None)
         completed_column = getattr(Task, "completed_at", None)
+        archived_column = getattr(Task, "archived_at", None)
 
         if created_column is not None:
             stats["new_tasks"] = (
@@ -96,6 +97,28 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
             ).scalar_one()
         else:
             stats["completed_tasks"] = None
+
+        if archived_column is not None:
+            stats["archived_tasks"] = (
+                await session.execute(select(func.count()).where(archived_column >= since))
+            ).scalar_one()
+        else:
+            stats["archived_tasks"] = None
+
+        # Any status change within window from main DB (created/completed/archived)
+        if created_column is not None or completed_column is not None or archived_column is not None:
+            conds = []
+            if created_column is not None:
+                conds.append(created_column >= since)
+            if completed_column is not None:
+                conds.append(completed_column >= since)
+            if archived_column is not None:
+                conds.append(archived_column >= since)
+            stats["db_tasks_changed"] = (
+                await session.execute(select(func.count(Task.id)).where(or_(*conds)))
+            ).scalar_one()
+        else:
+            stats["db_tasks_changed"] = None
 
     await engine.dispose()
     
@@ -198,17 +221,31 @@ def print_report(data: Dict[str, Any], days: int) -> None:
         print(f"    Tasks updated:   {data.get('webhook_task_updated', 0)}")
         print(f"    Tasks completed: {data.get('webhook_task_completed', 0)}")
 
+    # Main DB per-period stats
+    print(f"\nMain DB (last {days} days):")
     new_tasks = data.get("new_tasks")
     if new_tasks is not None:
-        print(f"New tasks (last {days} days): {new_tasks}")
+        print(f"  Created:       {new_tasks}")
     else:
-        print("New tasks:       N/A (created_at column not found)")
+        print("  Created:       N/A (created_at column not found)")
 
     completed_tasks = data.get("completed_tasks")
     if completed_tasks is not None:
-        print(f"Completed tasks (last {days} days): {completed_tasks}")
+        print(f"  Completed:     {completed_tasks}")
     else:
-        print("Completed tasks: N/A (completed_at column not found)")
+        print("  Completed:     N/A (completed_at column not found)")
+
+    archived_tasks = data.get("archived_tasks")
+    if archived_tasks is not None:
+        print(f"  Archived:      {archived_tasks}")
+    else:
+        print("  Archived:      N/A (archived_at column not found)")
+
+    changed_tasks = data.get("db_tasks_changed")
+    if changed_tasks is not None:
+        print(f"  Any change:    {changed_tasks}")
+    else:
+        print("  Any change:    N/A (no timestamp columns)")
 
     print("\nTop projects by task count:")
     for title, task_count in data.get("top_projects", []):
