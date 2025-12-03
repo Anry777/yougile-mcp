@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any, Dict
 
-from sqlalchemy import func, select, case, or_
+from sqlalchemy import func, select, case, or_, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -120,6 +120,40 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
         else:
             stats["db_tasks_changed"] = None
 
+        # Overall NULL / NOT NULL stats for task timestamp fields
+        if created_column is not None:
+            stats["created_at_null"] = (
+                await session.execute(select(func.count()).where(created_column.is_(None)))
+            ).scalar_one()
+            stats["created_at_not_null"] = (
+                await session.execute(select(func.count()).where(created_column.is_not(None)))
+            ).scalar_one()
+        else:
+            stats["created_at_null"] = None
+            stats["created_at_not_null"] = None
+
+        if completed_column is not None:
+            stats["completed_at_null"] = (
+                await session.execute(select(func.count()).where(completed_column.is_(None)))
+            ).scalar_one()
+            stats["completed_at_not_null"] = (
+                await session.execute(select(func.count()).where(completed_column.is_not(None)))
+            ).scalar_one()
+        else:
+            stats["completed_at_null"] = None
+            stats["completed_at_not_null"] = None
+
+        if archived_column is not None:
+            stats["archived_at_null"] = (
+                await session.execute(select(func.count()).where(archived_column.is_(None)))
+            ).scalar_one()
+            stats["archived_at_not_null"] = (
+                await session.execute(select(func.count()).where(archived_column.is_not(None)))
+            ).scalar_one()
+        else:
+            stats["archived_at_null"] = None
+            stats["archived_at_not_null"] = None
+
     await engine.dispose()
     
     # Webhook statistics (if webhook DB URL provided)
@@ -196,6 +230,35 @@ async def gather_stats(db_url: str, days: int, webhook_db_url: str | None = None
     return stats
 
 
+async def print_db_structure(db_url: str) -> None:
+    engine = create_async_engine(db_url, echo=False, future=True)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT table_name, column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name, ordinal_position
+                    """
+                )
+            )
+
+            print("\n=== Main DB structure (public schema) ===")
+            current_table = None
+            for row in result:
+                table_name = row.table_name
+                if table_name != current_table:
+                    current_table = table_name
+                    print(f"\nTable: {table_name}")
+                print(
+                    f"  {row.column_name:25} {row.data_type:20} nullable={row.is_nullable}"
+                )
+    finally:
+        await engine.dispose()
+
+
 def print_report(data: Dict[str, Any], days: int) -> None:
     print("=== YouGile DB statistics ===")
     print(f"Projects:        {data['projects']}")
@@ -247,6 +310,31 @@ def print_report(data: Dict[str, Any], days: int) -> None:
     else:
         print("  Any change:    N/A (no timestamp columns)")
 
+    print("\nTask timestamp fields (all tasks):")
+    if data.get("created_at_null") is not None:
+        print(
+            f"  created_at:    NULL={data['created_at_null']}, "
+            f"NOT NULL={data['created_at_not_null']}"
+        )
+    else:
+        print("  created_at:    N/A (created_at column not found)")
+
+    if data.get("completed_at_null") is not None:
+        print(
+            f"  completed_at:  NULL={data['completed_at_null']}, "
+            f"NOT NULL={data['completed_at_not_null']}"
+        )
+    else:
+        print("  completed_at:  N/A (completed_at column not found)")
+
+    if data.get("archived_at_null") is not None:
+        print(
+            f"  archived_at:   NULL={data['archived_at_null']}, "
+            f"NOT NULL={data['archived_at_not_null']}"
+        )
+    else:
+        print("  archived_at:   N/A (archived_at column not found)")
+
     print("\nTop projects by task count:")
     for title, task_count in data.get("top_projects", []):
         print(f"  {task_count:5} | {title}")
@@ -294,6 +382,7 @@ async def main_async() -> None:
     args = parse_args()
     stats = await gather_stats(args.db_url, args.days, args.webhook_db_url)
     print_report(stats, args.days)
+    await print_db_structure(args.db_url)
 
 
 def main() -> None:
