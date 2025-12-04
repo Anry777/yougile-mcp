@@ -19,6 +19,36 @@ from .models import WebhookEvent
 logger = logging.getLogger(__name__)
 
 
+def _to_dt(value: Any) -> Optional[datetime]:
+    """Convert numeric or ISO timestamp to naive UTC datetime.
+
+    Supports both seconds and milliseconds since epoch, as well as
+    ISO strings with optional trailing "Z".
+    Returns None on any parsing error.
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            v = float(value)
+            # Treat very large numeric values as milliseconds
+            if v > 10_000_000_000:
+                v = v / 1000.0
+            return datetime.utcfromtimestamp(v)
+        if isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except Exception:
+                return None
+            # Drop timezone info to store as naive UTC in DB
+            if dt.tzinfo is not None:
+                return dt.replace(tzinfo=None)
+            return dt
+    except Exception:
+        return None
+    return None
+
+
 async def _fetch_and_create_missing_entity(
     entity_type: str,
     entity_id: str,
@@ -159,8 +189,11 @@ async def _upsert_task_from_payload(payload: Dict[str, Any], local_session: Asyn
     if not task_id:
         raise ValueError("Task payload missing 'id' field")
     
+    # Load existing task if present to avoid blindly overwriting timestamp fields
+    existing: Optional[Task] = await local_session.get(Task, task_id)
+
     # Map payload fields to Task model
-    task_data = {
+    task_data: Dict[str, Any] = {
         "id": task_id,
         "title": payload.get("title", ""),
         "description": payload.get("description"),
@@ -173,7 +206,25 @@ async def _upsert_task_from_payload(payload: Dict[str, Any], local_session: Asyn
         "stickers": payload.get("stickers"),
         "checklists": payload.get("checklists"),
     }
-    
+
+    # Timestamps: support both API payloads (createdAt/completedAt/archivedAt)
+    # and webhook payloads (timestamp/completedTimestamp/archivedTimestamp).
+    created_raw = payload.get("createdAt") or payload.get("timestamp")
+    completed_raw = payload.get("completedAt") or payload.get("completedTimestamp")
+    archived_raw = payload.get("archivedAt") or payload.get("archivedTimestamp")
+
+    created_dt = _to_dt(created_raw)
+    if created_dt is not None and (existing is None or getattr(existing, "created_at", None) is None):
+        task_data["created_at"] = created_dt
+
+    completed_dt = _to_dt(completed_raw)
+    if completed_dt is not None and (existing is None or getattr(existing, "completed_at", None) is None):
+        task_data["completed_at"] = completed_dt
+
+    archived_dt = _to_dt(archived_raw)
+    if archived_dt is not None and (existing is None or getattr(existing, "archived_at", None) is None):
+        task_data["archived_at"] = archived_dt
+
     # Upsert using merge
     task = await local_session.merge(Task(**task_data))
     logger.debug(f"Upserted task {task_id}: {task.title}")

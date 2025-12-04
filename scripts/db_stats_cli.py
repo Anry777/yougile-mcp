@@ -382,7 +382,7 @@ async def main_async() -> None:
     args = parse_args()
     stats = await gather_stats(args.db_url, args.days, args.webhook_db_url)
     print_report(stats, args.days)
-    await print_db_structure(args.db_url)
+    # print_db_structure(args.db_url)  # оставить для отладки при необходимости
 
 
 def main() -> None:
