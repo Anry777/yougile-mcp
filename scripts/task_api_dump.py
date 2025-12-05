@@ -6,8 +6,10 @@ import os
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
 
 _RATE_LIMIT_PER_MINUTE = 50
@@ -171,6 +173,12 @@ async def _fetch_task_counts_by_project(
 
 
 async def main() -> None:
+    # Подгружаем .env из корня репозитория (если есть), чтобы получить YOUGILE_API_KEY и прочие переменные
+    project_root = Path(__file__).resolve().parents[1]
+    env_path = project_root / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+
     base_url = os.environ.get("YOUGILE_BASE_URL", "https://yougile.com")
     api_key = os.environ.get("YOUGILE_API_KEY") or os.environ.get("yougile_api_key")
 

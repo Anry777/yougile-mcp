@@ -63,6 +63,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       YOUGILE_LOCAL_DB_URL: "postgresql+asyncpg://yougile:yougile@db/yougile"
       YOUGILE_WEBHOOK_DB_URL: "postgresql+asyncpg://yougile:yougile@db/yougile_webhooks"
+      REDMINE_URL: ${REDMINE_URL}
+      REDMINE_API_KEY: ${REDMINE_API_KEY}
+      REDMINE_DEFAULT_PASSWORD: ${REDMINE_DEFAULT_PASSWORD}
     depends_on:
       db:
         condition: service_healthy

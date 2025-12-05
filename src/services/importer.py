@@ -86,15 +86,22 @@ async def _upsert(session: AsyncSession, model, data: Dict[str, Any], pk_field: 
     return obj
 
 
-async def _upsert_task_assignee(session: AsyncSession, task_id: str, user_id: str) -> None:
-    if not task_id or not user_id:
+async def _ensure_user_stub(session: AsyncSession, user_id: str, source: str, ref_id: str) -> None:
+    if not user_id:
         return
-    # Ensure referenced user exists to satisfy FK constraint
     existing_user = await session.get(User, user_id)
     if existing_user is None:
         # Create minimal stub user; детали (name/email/role) могут быть обновлены позже при синхронизации
-        logger.warning(f"Creating stub User for missing user_id={user_id} referenced from task {task_id}")
+        logger.warning(
+            f"Creating stub User for missing user_id={user_id} referenced from {source} {ref_id}"
+        )
         session.add(User(id=user_id, name=None, email=None, role=None))
+
+
+async def _upsert_task_assignee(session: AsyncSession, task_id: str, user_id: str) -> None:
+    if not task_id or not user_id:
+        return
+    await _ensure_user_stub(session, user_id, "task", task_id)
 
     obj = await session.get(TaskAssignee, (task_id, user_id))
     if obj is None:
@@ -370,10 +377,13 @@ async def import_project(
                         )
                         ts = m.get("timestamp") or m.get("createdAt")
                         text = m.get("text") or m.get("message") or ""
+                        author_id_str = author_id if isinstance(author_id, str) else None
+                        if author_id_str:
+                            await _ensure_user_stub(session, author_id_str, "comment", str(mid))
                         await _upsert(session, Comment, {
                             "id": str(mid),
                             "task_id": tid,
-                            "author_id": author_id if isinstance(author_id, str) else None,
+                            "author_id": author_id_str,
                             "text": str(text),
                             # _to_dt уже приводит дату к naive UTC; fallback также даём naive UTC
                             "timestamp": _to_dt(ts) or datetime.utcnow(),

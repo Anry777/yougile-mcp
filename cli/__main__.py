@@ -202,6 +202,34 @@ def main(argv=None):
     p_plist = projects_sub.add_parser("list", help="List projects in company")
     p_plist.add_argument("--json", action="store_true", help="Output JSON")
 
+    # sync group (e.g. YouGile -> Redmine)
+    sync_parser = subparsers.add_parser("sync", help="Synchronization operations")
+    sync_parser.add_argument("--json", action="store_true", help="Output JSON")
+    sync_sub = sync_parser.add_subparsers(dest="sync_cmd", required=True)
+
+    sync_redmine = sync_sub.add_parser("redmine", help="Sync data into Redmine from local DB")
+    sync_redmine.add_argument(
+        "--db",
+        dest="db_path",
+        type=str,
+        default="./yougile_local.db",
+        help="Local DB file path or URL (optional, default uses YOUGILE_LOCAL_DB_URL)",
+    )
+    sync_redmine.add_argument(
+        "--entities",
+        nargs="+",
+        choices=["users", "projects", "boards", "all"],
+        default=["users"],
+        help="Entities to sync (users, projects, boards; all = all supported)",
+    )
+    sync_redmine.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Apply changes (by default runs in dry-run mode)",
+    )
+    sync_redmine.add_argument("--json", action="store_true", help="Output JSON")
+
     # db group
     db_parser = subparsers.add_parser("db", help="Local DB utilities")
     db_sub = db_parser.add_subparsers(dest="db_cmd", required=True)
@@ -500,6 +528,73 @@ def main(argv=None):
                 else:
                     for p in result:
                         print(f"{p.get('id')} | {p.get('title')}")
+        elif args.command == "sync":
+            if args.sync_cmd == "redmine":
+                try:
+                    from src.services import redmine_sync as redmine_sync_service
+                except ModuleNotFoundError as exc:
+                    missing = exc.name or "required dependencies"
+                    print(
+                        f"Redmine sync requires optional dependency '{missing}'. Install the extra packages from requirements.txt and retry.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+                entities = getattr(args, "entities", ["users"]) or ["users"]
+                dry_run = not getattr(args, "apply", False)
+                result: dict = {}
+
+                if "all" in entities or "users" in entities:
+                    result["users"] = await redmine_sync_service.sync_users(
+                        db_path=getattr(args, "db_path", "./yougile_local.db"),
+                        dry_run=dry_run,
+                    )
+
+                if "all" in entities or "projects" in entities:
+                    result["projects"] = await redmine_sync_service.sync_projects(
+                        db_path=getattr(args, "db_path", "./yougile_local.db"),
+                        dry_run=dry_run,
+                    )
+
+                if "all" in entities or "boards" in entities:
+                    result["boards"] = await redmine_sync_service.sync_boards(
+                        db_path=getattr(args, "db_path", "./yougile_local.db"),
+                        dry_run=dry_run,
+                    )
+
+                if getattr(args, "json", False):
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                else:
+                    users_res = result.get("users") or {}
+                    if users_res:
+                        print("Redmine sync (users):")
+                        print(f"  Total:           {users_res.get('total')}")
+                        print(f"  Existing:        {users_res.get('existing')}")
+                        print(f"  To create:       {users_res.get('to_create')}")
+                        print(f"  Created:         {users_res.get('created')}")
+                        print(f"  Skipped no email:{users_res.get('skipped_no_email')}")
+                        print(f"  Errors:          {users_res.get('errors')}")
+                        print(f"  Dry run:         {users_res.get('dry_run')}")
+
+                    projects_res = result.get("projects") or {}
+                    if projects_res:
+                        print("\nRedmine sync (projects):")
+                        print(f"  Total:           {projects_res.get('total')}")
+                        print(f"  Existing:        {projects_res.get('existing')}")
+                        print(f"  To create:       {projects_res.get('to_create')}")
+                        print(f"  Created:         {projects_res.get('created')}")
+                        print(f"  Errors:          {projects_res.get('errors')}")
+                        print(f"  Dry run:         {projects_res.get('dry_run')}")
+
+                    boards_res = result.get("boards") or {}
+                    if boards_res:
+                        print("\nRedmine sync (boards as subprojects):")
+                        print(f"  Total:           {boards_res.get('total')}")
+                        print(f"  Existing:        {boards_res.get('existing')}")
+                        print(f"  To create:       {boards_res.get('to_create')}")
+                        print(f"  Created:         {boards_res.get('created')}")
+                        print(f"  Errors:          {boards_res.get('errors')}")
+                        print(f"  Dry run:         {boards_res.get('dry_run')}")
         elif args.command == "import":
             try:
                 from src.services import importer as importer_service  # Delay heavy optional deps

@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     yougile_webhook_reload: Optional[int] = None
     yougile_webhook_db_url: Optional[str] = None
 
+    # Redmine settings
+    redmine_url: Optional[str] = None
+    redmine_api_key: Optional[str] = None
+    redmine_verify_ssl: bool = True
+    redmine_default_password: Optional[str] = None
+
     # MCP server settings
     server_name: str = "YouGile MCP Server"
     server_version: str = "1.0.0"
