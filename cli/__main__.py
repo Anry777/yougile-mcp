@@ -583,6 +583,7 @@ def main(argv=None):
                         print(f"  Existing:        {projects_res.get('existing')}")
                         print(f"  To create:       {projects_res.get('to_create')}")
                         print(f"  Created:         {projects_res.get('created')}")
+                        print(f"  Skipped excluded:{projects_res.get('skipped_excluded')}")
                         print(f"  Errors:          {projects_res.get('errors')}")
                         print(f"  Dry run:         {projects_res.get('dry_run')}")
 
@@ -593,6 +594,7 @@ def main(argv=None):
                         print(f"  Existing:        {boards_res.get('existing')}")
                         print(f"  To create:       {boards_res.get('to_create')}")
                         print(f"  Created:         {boards_res.get('created')}")
+                        print(f"  Skipped excluded:{boards_res.get('skipped_excluded')}")
                         print(f"  Errors:          {boards_res.get('errors')}")
                         print(f"  Dry run:         {boards_res.get('dry_run')}")
         elif args.command == "import":

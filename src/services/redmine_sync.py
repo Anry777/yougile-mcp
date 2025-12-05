@@ -4,7 +4,7 @@ import logging
 import os
 import secrets
 import string
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from sqlalchemy import select
@@ -15,6 +15,42 @@ from src.localdb.models import User as LocalUser, Project as LocalProject, Board
 
 
 logger = logging.getLogger(__name__)
+
+
+def _load_excluded_project_ids() -> Set[str]:
+    """Загрузить список ID проектов YouGile, которые нужно игнорировать при sync в Redmine.
+
+    Формат файла: один UUID проекта на строку. Пустые строки и строки, начинающиеся с '#', игнорируются.
+    Путь к файлу настраивается через переменную окружения REDMINE_SYNC_EXCLUDE_PROJECTS,
+    по умолчанию используется cli/redmine_sync_exclude_projects.txt относительно корня проекта.
+    """
+
+    # Определяем путь к файлу: env override -> значение из settings (если появится) -> дефолт
+    path = os.environ.get("REDMINE_SYNC_EXCLUDE_PROJECTS")
+    if not path:
+        # Попытка построить путь относительно src/ (мы сейчас в src/services/)
+        current_dir = os.path.dirname(os.path.dirname(__file__))  # src/
+        project_root = os.path.dirname(current_dir)
+        default_path = os.path.join(project_root, "cli", "redmine_sync_exclude_projects.txt")
+        path = default_path
+
+    excluded: Set[str] = set()
+
+    if not os.path.exists(path):
+        return excluded
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                excluded.add(line)
+    except Exception:
+        # В случае ошибки чтения файла не блокируем sync, просто считаем, что исключений нет
+        return excluded
+
+    return excluded
 
 
 def _ensure_local_session_factory(db_path: str | None = None):
@@ -381,10 +417,13 @@ async def sync_projects(db_path: str | None = None, dry_run: bool = True) -> Dic
         "existing": 0,
         "to_create": 0,
         "created": 0,
+        "skipped_excluded": 0,
         "errors": 0,
         "error_details": [],
         "items": [],
     }
+
+    excluded_ids = _load_excluded_project_ids()
 
     async with session_factory() as session:
         result = await session.execute(select(LocalProject))
@@ -416,6 +455,20 @@ async def sync_projects(db_path: str | None = None, dry_run: bool = True) -> Dic
 
         for p in projects:
             yg_project_id = getattr(p, "id", None)
+            title = getattr(p, "title", None) or ""
+
+            if yg_project_id and (yg_project_id in excluded_ids or "___deleted" in title):
+                summary["skipped_excluded"] += 1
+                summary["items"].append(
+                    {
+                        "yougile_project_id": yg_project_id,
+                        "identifier": None,
+                        "title": title,
+                        "action": "skip_excluded",
+                    }
+                )
+                continue
+
             identifier = _build_project_identifier(yg_project_id)
             identifier_norm = identifier.lower()
 
@@ -520,14 +573,25 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
         "existing": 0,
         "to_create": 0,
         "created": 0,
+        "skipped_excluded": 0,
         "errors": 0,
         "error_details": [],
         "items": [],
     }
 
+    excluded_project_ids = _load_excluded_project_ids()
+
     async with session_factory() as session:
         result = await session.execute(select(LocalBoard))
         boards: List[LocalBoard] = result.scalars().all()
+
+        # Авто-исключаем проекты, помеченные как удалённые ("___deleted" в title)
+        deleted_proj_result = await session.execute(
+            select(LocalProject.id).where(LocalProject.title.contains("___deleted"))
+        )
+        deleted_project_ids = {row[0] for row in deleted_proj_result}
+        if deleted_project_ids:
+            excluded_project_ids |= deleted_project_ids
 
     summary["total"] = len(boards)
 
@@ -556,6 +620,19 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
         for b in boards:
             yg_board_id = getattr(b, "id", None)
             yg_project_id = getattr(b, "project_id", None)
+
+            if yg_project_id and yg_project_id in excluded_project_ids:
+                summary["skipped_excluded"] += 1
+                summary["items"].append(
+                    {
+                        "yougile_board_id": yg_board_id,
+                        "yougile_project_id": yg_project_id,
+                        "identifier": None,
+                        "action": "skip_excluded_project",
+                    }
+                )
+                continue
+
             identifier = _build_board_identifier(yg_board_id)
             identifier_norm = identifier.lower()
 
