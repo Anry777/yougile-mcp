@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "0004_add_task_issue_links"
-down_revision = "0003_add_task_timestamps"
+down_revision = "0005_add_webhook_event_timestamp"
 branch_labels = None
 depends_on = None
 
