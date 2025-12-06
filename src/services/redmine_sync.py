@@ -8,13 +8,50 @@ from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from src.config import settings
 from src.localdb.session import init_engine
-from src.localdb.models import User as LocalUser, Project as LocalProject, Board as LocalBoard
+from src.localdb.models import (
+    User as LocalUser,
+    Project as LocalProject,
+    Board as LocalBoard,
+    Task as LocalTask,
+    Column as LocalColumn,
+)
 
 
 logger = logging.getLogger(__name__)
+
+# Базовые (дефолтные) имена ролей Redmine для маппинга users.role → Redmine roles.
+_DEFAULT_ADMIN_ROLE_NAME = "Manager"
+_DEFAULT_USER_ROLE_NAME = "Reporter"
+
+
+def _get_admin_role_name() -> str:
+    """Имя роли для админов (YouGile role=admin) в Redmine.
+
+    Приоритет источников:
+      1) переменные окружения REDMINE_ADMIN_ROLE_NAME
+      2) settings.redmine_admin_role_name (из .env через pydantic Settings)
+      3) дефолт "Manager".
+    """
+
+    return (
+        os.environ.get("REDMINE_ADMIN_ROLE_NAME")
+        or getattr(settings, "redmine_admin_role_name", None)
+        or _DEFAULT_ADMIN_ROLE_NAME
+    )
+
+
+def _get_user_role_name() -> str:
+    """Имя роли для обычных пользователей (YouGile role=user) в Redmine."""
+
+    return (
+        os.environ.get("REDMINE_USER_ROLE_NAME")
+        or getattr(settings, "redmine_user_role_name", None)
+        or _DEFAULT_USER_ROLE_NAME
+    )
 
 
 def _load_excluded_project_ids() -> Set[str]:
@@ -301,20 +338,134 @@ async def sync_users(db_path: str | None = None, dry_run: bool = True) -> Dict[s
             email_norm = email.lower()
             rm_user = existing_by_email.get(email_norm)
 
+            # Целевая форма полей в Redmine
+            desired_login = email
+            login_base = email.split("@", 1)[0] or u.id
+            raw_name = (u.name or "").strip()
+            desired_firstname, desired_lastname = _split_name(raw_name)
+            if not desired_firstname or desired_firstname == email:
+                desired_firstname = login_base
+            # Фамилия в Redmine обязательна, поэтому если нормальной нет,
+            # используем login_base (часть email до '@'), а не пустую строку
+            if not desired_lastname or desired_lastname == email or desired_lastname == u.id:
+                desired_lastname = login_base
+            # Язык по умолчанию – русский
+            desired_language = "ru"
+
             if rm_user:
+                current_login = (rm_user.get("login") or "").strip()
+                current_firstname = (rm_user.get("firstname") or "").strip()
+                current_lastname = (rm_user.get("lastname") or "").strip()
+                current_mail = (rm_user.get("mail") or "").strip()
+                current_language = (rm_user.get("language") or "").strip()
+
+                needs_update = (
+                    current_login != desired_login
+                    or current_mail != email
+                    or current_firstname != desired_firstname
+                    or current_lastname != desired_lastname
+                    or current_language != desired_language
+                )
+
+                if not needs_update:
+                    summary["existing"] += 1
+                    summary["items"].append(
+                        {
+                            "yougile_user_id": u.id,
+                            "email": email,
+                            "action": "exists",
+                            "redmine_user_id": rm_user.get("id"),
+                            "redmine_login": current_login,
+                        }
+                    )
+                    continue
+
+                # Пользователь есть, но поля отличаются — обновляем
+                update_payload = {
+                    "login": desired_login,
+                    "firstname": desired_firstname,
+                    "lastname": desired_lastname,
+                    "mail": email,
+                    "language": desired_language,
+                }
+
+                if dry_run:
+                    summary["items"].append(
+                        {
+                            "yougile_user_id": u.id,
+                            "email": email,
+                            "action": "would_update",
+                            "redmine_user_id": rm_user.get("id"),
+                            "current": {
+                                "login": current_login,
+                                "firstname": current_firstname,
+                                "lastname": current_lastname,
+                                "mail": current_mail,
+                                "language": current_language,
+                            },
+                            "desired": update_payload,
+                        }
+                    )
+                    summary["existing"] += 1
+                    continue
+
+                try:
+                    resp = await client.put(
+                        f"/users/{rm_user.get('id')}.json",
+                        json={"user": update_payload},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Failed to update Redmine user for %s", email)
+                    summary["success"] = False
+                    summary["errors"] += 1
+                    summary["error_details"].append(
+                        {
+                            "yougile_user_id": u.id,
+                            "email": email,
+                            "action": "error_update",
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+
+                if resp.status_code >= 400:
+                    logger.error(
+                        "Failed to update Redmine user for %s: HTTP %s %s",
+                        email,
+                        resp.status_code,
+                        resp.text,
+                    )
+                    summary["success"] = False
+                    summary["errors"] += 1
+                    summary["error_details"].append(
+                        {
+                            "yougile_user_id": u.id,
+                            "email": email,
+                            "action": "error_update_http",
+                            "status_code": resp.status_code,
+                            "body": resp.text,
+                        }
+                    )
+                    continue
+
+                # Успешно обновили существующего пользователя
+                body_upd = resp.json() if resp.content else {}
+                updated_user = body_upd.get("user") or rm_user
+                existing_by_email[email_norm] = updated_user
+
                 summary["existing"] += 1
                 summary["items"].append(
                     {
                         "yougile_user_id": u.id,
                         "email": email,
-                        "action": "exists",
-                        "redmine_user_id": rm_user.get("id"),
-                        "redmine_login": rm_user.get("login"),
+                        "action": "updated",
+                        "redmine_user_id": updated_user.get("id"),
+                        "redmine_login": updated_user.get("login"),
                     }
                 )
                 continue
 
-            # Not found in Redmine
+            # Not found in Redmine — создаём
             summary["to_create"] += 1
             if dry_run:
                 summary["items"].append(
@@ -326,21 +477,11 @@ async def sync_users(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                 )
                 continue
 
-            login_base = email.split("@", 1)[0] or u.id
-            login = login_base
-
-            firstname, lastname = _split_name(u.name or "")
-
-            if not firstname:
-                firstname = login_base
-            if not lastname:
-                lastname = u.id
-
             password = rm_cfg["default_password"]
             payload = {
-                "login": login,
-                "firstname": firstname,
-                "lastname": lastname,
+                "login": desired_login,
+                "firstname": desired_firstname,
+                "lastname": desired_lastname,
                 "mail": email,
                 "password": password,
                 "must_change_passwd": True,
@@ -639,16 +780,87 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
             rm_subproject = existing_by_identifier.get(identifier_norm)
             if rm_subproject:
                 summary["existing"] += 1
+
+                rm_subproject_id = rm_subproject.get("id")
                 summary["items"].append(
                     {
                         "yougile_board_id": yg_board_id,
                         "yougile_project_id": yg_project_id,
                         "identifier": identifier,
                         "action": "exists",
-                        "redmine_project_id": rm_subproject.get("id"),
+                        "redmine_project_id": rm_subproject_id,
                         "redmine_name": rm_subproject.get("name"),
                     }
                 )
+
+                # Обеспечиваем наследование участников от родительского проекта,
+                # чтобы в подпроектах автоматически были те же участники, что и
+                # в головном проекте.
+                if dry_run:
+                    summary["items"].append(
+                        {
+                            "yougile_board_id": yg_board_id,
+                            "yougile_project_id": yg_project_id,
+                            "identifier": identifier,
+                            "action": "would_enable_inherit_members",
+                            "redmine_project_id": rm_subproject_id,
+                        }
+                    )
+                else:
+                    try:
+                        resp_inherit = await client.put(
+                            f"/projects/{rm_subproject_id}.json",
+                            json={"project": {"inherit_members": True}},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception(
+                            "Failed to enable inherit_members for subproject %s",
+                            rm_subproject_id,
+                        )
+                        summary["success"] = False
+                        summary["errors"] += 1
+                        summary["error_details"].append(
+                            {
+                                "yougile_board_id": yg_board_id,
+                                "yougile_project_id": yg_project_id,
+                                "identifier": identifier,
+                                "redmine_project_id": rm_subproject_id,
+                                "action": "error_enable_inherit_members",
+                                "error": str(exc),
+                            }
+                        )
+                    else:
+                        if resp_inherit.status_code >= 400:
+                            logger.error(
+                                "Failed to enable inherit_members for subproject %s: HTTP %s %s",
+                                rm_subproject_id,
+                                resp_inherit.status_code,
+                                resp_inherit.text,
+                            )
+                            summary["success"] = False
+                            summary["errors"] += 1
+                            summary["error_details"].append(
+                                {
+                                    "yougile_board_id": yg_board_id,
+                                    "yougile_project_id": yg_project_id,
+                                    "identifier": identifier,
+                                    "redmine_project_id": rm_subproject_id,
+                                    "action": "error_enable_inherit_members_http",
+                                    "status_code": resp_inherit.status_code,
+                                    "body": resp_inherit.text,
+                                }
+                            )
+                        else:
+                            summary["items"].append(
+                                {
+                                    "yougile_board_id": yg_board_id,
+                                    "yougile_project_id": yg_project_id,
+                                    "identifier": identifier,
+                                    "action": "enabled_inherit_members",
+                                    "redmine_project_id": rm_subproject_id,
+                                }
+                            )
+
                 continue
 
             parent_identifier = _build_project_identifier(yg_project_id)
@@ -688,6 +900,9 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
                 "identifier": identifier,
                 "parent_id": parent.get("id"),
                 "is_public": False,
+                # Включаем наследование участников сразу при создании подпроекта,
+                # чтобы в нём были те же участники, что и в головном проекте.
+                "inherit_members": True,
             }
 
             try:
@@ -743,5 +958,516 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
                     "redmine_name": created_project.get("name"),
                 }
             )
+
+    return summary
+
+
+async def _fetch_redmine_roles(client: httpx.AsyncClient) -> Dict[str, int]:
+    """Получить роли Redmine и построить индекс name -> id."""
+
+    try:
+        resp = await client.get("/roles.json")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Failed to fetch Redmine roles: {exc}") from exc
+
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Failed to fetch Redmine roles: HTTP {resp.status_code} {resp.text}",
+        )
+
+    data = resp.json()
+    roles = data.get("roles") or []
+
+    role_map: Dict[str, int] = {}
+    for r in roles:
+        name = (r.get("name") or "").strip()
+        role_id = r.get("id")
+        if name and role_id:
+            role_map[name] = role_id
+
+    return role_map
+
+
+async def _fetch_redmine_memberships_for_project(
+    client: httpx.AsyncClient,
+    project_id: int,
+) -> List[Dict[str, Any]]:
+    """Получить membership'ы Redmine-проекта с учётом пагинации."""
+
+    memberships: List[Dict[str, Any]] = []
+    limit = 100
+    offset = 0
+
+    while True:
+        try:
+            resp = await client.get(
+                f"/projects/{project_id}/memberships.json",
+                params={"limit": limit, "offset": offset},
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Failed to fetch memberships for project {project_id}: {exc}",
+            ) from exc
+
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                "Failed to fetch memberships for project "
+                f"{project_id}: HTTP {resp.status_code} {resp.text}",
+            )
+
+        data = resp.json()
+        items = data.get("memberships") or []
+        total_count = int(data.get("total_count", len(items)))
+
+        memberships.extend(items)
+
+        if not items or offset + limit >= total_count:
+            break
+        offset += limit
+
+    return memberships
+
+
+async def sync_memberships(db_path: str | None = None, dry_run: bool = True) -> Dict[str, Any]:
+    """Синхронизация membership пользователей в проектах Redmine.
+
+    Логика:
+    - Для каждого проекта YouGile, который не исключён, ищем соответствующий проект Redmine
+      по identifier (yg-<yougile_project_id>).
+    - Собираем множество пользователей проекта:
+        * все company-admin'ы (User.role == "admin") → роль ADMIN_ROLE_NAME (Manager)
+        * все пользователи, назначенные исполнителями задач в этом проекте → роль
+          USER_ROLE_NAME (Reporter), если не admin.
+    - В Redmine для каждого такого пользователя создаём membership или добавляем недостающую
+      роль к существующему membership'у, не удаляя уже имеющиеся роли.
+    """
+
+    session_factory = _ensure_local_session_factory(db_path)
+    rm_cfg = _get_redmine_base_config()
+
+    summary: Dict[str, Any] = {
+        "success": True,
+        "dry_run": dry_run,
+        "projects": 0,
+        "projects_skipped_excluded": 0,
+        "total": 0,
+        "existing": 0,
+        "to_create": 0,
+        "created": 0,
+        "to_update": 0,
+        "updated": 0,
+        "skipped_no_email": 0,
+        "skipped_no_redmine_user": 0,
+        "errors": 0,
+        "error_details": [],
+        "items": [],
+    }
+
+    excluded_project_ids = _load_excluded_project_ids()
+
+    # Готовим данные из локальной БД: проекты, пользователи и связи проект → пользователи задач
+    async with session_factory() as session:
+        # Все проекты
+        result_projects = await session.execute(select(LocalProject))
+        projects: List[LocalProject] = result_projects.scalars().all()
+
+        # Авто-исключаем проекты, помеченные как удалённые ("___deleted" в title)
+        deleted_proj_result = await session.execute(
+            select(LocalProject.id).where(LocalProject.title.contains("___deleted"))
+        )
+        deleted_project_ids = {row[0] for row in deleted_proj_result}
+        if deleted_project_ids:
+            excluded_project_ids |= deleted_project_ids
+
+        # Все пользователи
+        result_users = await session.execute(select(LocalUser))
+        users: List[LocalUser] = result_users.scalars().all()
+        users_by_id: Dict[str, LocalUser] = {u.id: u for u in users}
+
+        admin_user_ids: Set[str] = {
+            u.id
+            for u in users
+            if ((u.role or "").strip().lower() == "admin")
+        }
+
+        # Связи проект → пользователи, назначенные исполнителями задач.
+        # Берём всех, кто когда-либо был назначен на задачи проекта (без фильтрации
+        # по deleted/archived), чтобы роли в Redmine отражали полный состав
+        # участников проекта.
+        result_pairs = await session.execute(
+            select(LocalProject.id, LocalUser.id)
+            .join(LocalBoard, LocalBoard.project_id == LocalProject.id)
+            .join(LocalColumn, LocalColumn.board_id == LocalBoard.id)
+            .join(LocalTask, LocalTask.column_id == LocalColumn.id)
+            .join(LocalTask.assignees)
+            .distinct()
+        )
+
+        project_user_ids: Dict[str, Set[str]] = {}
+        for proj_id, user_id in result_pairs:
+            if not proj_id or not user_id:
+                continue
+            project_user_ids.setdefault(proj_id, set()).add(user_id)
+
+    summary["projects"] = len(projects)
+
+    headers = {"X-Redmine-API-Key": rm_cfg["api_key"]}
+    async with httpx.AsyncClient(
+        base_url=rm_cfg["url"],
+        headers=headers,
+        verify=rm_cfg["verify"],
+    ) as client:
+        # Предзагрузка данных из Redmine: проекты, пользователи, роли
+        try:
+            projects_by_identifier = await _fetch_redmine_projects_by_identifier(client)
+            users_by_email = await _fetch_redmine_users_by_email(client)
+            role_map = await _fetch_redmine_roles(client)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to prefetch Redmine data for memberships")
+            summary["success"] = False
+            summary["errors"] += 1
+            summary["error_details"].append(
+                {
+                    "yougile_project_id": None,
+                    "action": "error_prefetch",
+                    "error": str(exc),
+                }
+            )
+            return summary
+
+        admin_role_name = _get_admin_role_name()
+        user_role_name = _get_user_role_name()
+
+        admin_role_id = role_map.get(admin_role_name)
+        user_role_id = role_map.get(user_role_name)
+
+        if not admin_role_id or not user_role_id:
+            missing: List[str] = []
+            if not admin_role_id:
+                missing.append(admin_role_name)
+            if not user_role_id:
+                missing.append(user_role_name)
+            msg = f"Required Redmine roles not found: {', '.join(missing)}"
+            logger.error(msg)
+            summary["success"] = False
+            summary["errors"] += 1
+            summary["error_details"].append(
+                {
+                    "yougile_project_id": None,
+                    "action": "missing_roles",
+                    "error": msg,
+                }
+            )
+            return summary
+
+        # Для каждого проекта YouGile настраиваем membership в соответствующем проекте Redmine
+        for project in projects:
+            yg_project_id = getattr(project, "id", None)
+            if not yg_project_id:
+                continue
+
+            if yg_project_id in excluded_project_ids:
+                summary["projects_skipped_excluded"] += 1
+                summary["items"].append(
+                    {
+                        "yougile_project_id": yg_project_id,
+                        "action": "skip_excluded",
+                    }
+                )
+                continue
+
+            identifier = _build_project_identifier(yg_project_id)
+            rm_project = projects_by_identifier.get(identifier.lower())
+            if not rm_project:
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "yougile_project_id": yg_project_id,
+                        "identifier": identifier,
+                        "action": "missing_redmine_project",
+                        "error": "Redmine project not found. Sync projects first.",
+                    }
+                )
+                continue
+
+            rm_project_id = rm_project.get("id")
+            if not rm_project_id:
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "yougile_project_id": yg_project_id,
+                        "identifier": identifier,
+                        "action": "missing_redmine_project_id",
+                        "error": "Redmine project ID is None",
+                    }
+                )
+                continue
+
+            # Желаемые пользователи проекта: все админы + все исполнители задач проекта
+            desired_user_ids: Set[str] = set(project_user_ids.get(yg_project_id, set()))
+            desired_user_ids |= admin_user_ids
+
+            if not desired_user_ids:
+                continue
+
+            # Текущие membership'ы проекта
+            try:
+                memberships = await _fetch_redmine_memberships_for_project(client, rm_project_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Failed to fetch memberships for Redmine project %s", rm_project_id,
+                )
+                summary["success"] = False
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "yougile_project_id": yg_project_id,
+                        "redmine_project_id": rm_project_id,
+                        "action": "error_fetch_memberships",
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            existing_memberships_by_user_id: Dict[int, Dict[str, Any]] = {}
+            for m in memberships:
+                user_info = m.get("user") or {}
+                uid = user_info.get("id")
+                if uid:
+                    existing_memberships_by_user_id[uid] = m
+
+            # Обрабатываем каждого пользователя
+            for user_id in desired_user_ids:
+                local_user = users_by_id.get(user_id)
+                if not local_user:
+                    continue
+
+                email = (local_user.email or "").strip().lower()
+                if not email:
+                    summary["skipped_no_email"] += 1
+                    summary["items"].append(
+                        {
+                            "yougile_project_id": yg_project_id,
+                            "yougile_user_id": user_id,
+                            "action": "skip_no_email",
+                        }
+                    )
+                    continue
+
+                rm_user = users_by_email.get(email)
+                if not rm_user:
+                    summary["skipped_no_redmine_user"] += 1
+                    summary["items"].append(
+                        {
+                            "yougile_project_id": yg_project_id,
+                            "yougile_user_id": user_id,
+                            "email": email,
+                            "action": "skip_no_redmine_user",
+                        }
+                    )
+                    continue
+
+                role_name = (local_user.role or "").strip().lower()
+                desired_role_id = admin_role_id if role_name == "admin" else user_role_id
+                rm_user_id = rm_user.get("id")
+                if not rm_user_id or not desired_role_id:
+                    continue
+
+                summary["total"] += 1
+
+                membership = existing_memberships_by_user_id.get(rm_user_id)
+                if membership:
+                    existing_role_ids = {
+                        r.get("id")
+                        for r in (membership.get("roles") or [])
+                        if r.get("id") is not None
+                    }
+
+                    if desired_role_id in existing_role_ids:
+                        summary["existing"] += 1
+                        summary["items"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "action": "exists",
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                            }
+                        )
+                        continue
+
+                    new_role_ids = sorted(existing_role_ids | {desired_role_id})
+
+                    if dry_run:
+                        summary["to_update"] += 1
+                        summary["items"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "action": "would_update",
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "current_role_ids": sorted(existing_role_ids),
+                                "desired_role_ids": new_role_ids,
+                            }
+                        )
+                        continue
+
+                    membership_id = membership.get("id")
+                    if not membership_id:
+                        continue
+
+                    try:
+                        resp = await client.put(
+                            f"/memberships/{membership_id}.json",
+                            json={"membership": {"role_ids": new_role_ids}},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception(
+                            "Failed to update membership for user %s in project %s",
+                            rm_user_id,
+                            rm_project_id,
+                        )
+                        summary["success"] = False
+                        summary["errors"] += 1
+                        summary["error_details"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "action": "error_update_membership",
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+
+                    if resp.status_code >= 400:
+                        logger.error(
+                            "Failed to update membership for user %s in project %s: HTTP %s %s",
+                            rm_user_id,
+                            rm_project_id,
+                            resp.status_code,
+                            resp.text,
+                        )
+                        summary["success"] = False
+                        summary["errors"] += 1
+                        summary["error_details"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "action": "error_update_membership_http",
+                                "status_code": resp.status_code,
+                                "body": resp.text,
+                            }
+                        )
+                        continue
+
+                    summary["updated"] += 1
+                    summary["items"].append(
+                        {
+                            "yougile_project_id": yg_project_id,
+                            "yougile_user_id": user_id,
+                            "email": email,
+                            "action": "updated",
+                            "redmine_project_id": rm_project_id,
+                            "redmine_user_id": rm_user_id,
+                            "role_ids": new_role_ids,
+                        }
+                    )
+                else:
+                    # membership ещё нет — создаём
+                    if dry_run:
+                        summary["to_create"] += 1
+                        summary["items"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "action": "would_create",
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "role_ids": [desired_role_id],
+                            }
+                        )
+                        continue
+
+                    try:
+                        resp = await client.post(
+                            f"/projects/{rm_project_id}/memberships.json",
+                            json={
+                                "membership": {
+                                    "user_id": rm_user_id,
+                                    "role_ids": [desired_role_id],
+                                }
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception(
+                            "Failed to create membership for user %s in project %s",
+                            rm_user_id,
+                            rm_project_id,
+                        )
+                        summary["success"] = False
+                        summary["errors"] += 1
+                        summary["error_details"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "action": "error_create_membership",
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+
+                    if resp.status_code >= 400:
+                        logger.error(
+                            "Failed to create membership for user %s in project %s: HTTP %s %s",
+                            rm_user_id,
+                            rm_project_id,
+                            resp.status_code,
+                            resp.text,
+                        )
+                        summary["success"] = False
+                        summary["errors"] += 1
+                        summary["error_details"].append(
+                            {
+                                "yougile_project_id": yg_project_id,
+                                "yougile_user_id": user_id,
+                                "email": email,
+                                "redmine_project_id": rm_project_id,
+                                "redmine_user_id": rm_user_id,
+                                "action": "error_create_membership_http",
+                                "status_code": resp.status_code,
+                                "body": resp.text,
+                            }
+                        )
+                        continue
+
+                    body = resp.json() if resp.content else {}
+                    created_membership = body.get("membership") or {}
+
+                    summary["created"] += 1
+                    summary["items"].append(
+                        {
+                            "yougile_project_id": yg_project_id,
+                            "yougile_user_id": user_id,
+                            "email": email,
+                            "action": "created",
+                            "redmine_project_id": rm_project_id,
+                            "redmine_user_id": rm_user_id,
+                            "membership_id": created_membership.get("id"),
+                            "role_ids": [desired_role_id],
+                        }
+                    )
 
     return summary

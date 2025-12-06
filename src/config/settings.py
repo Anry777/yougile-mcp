@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     redmine_api_key: Optional[str] = None
     redmine_verify_ssl: bool = True
     redmine_default_password: Optional[str] = None
+    redmine_admin_role_name: Optional[str] = None
+    redmine_user_role_name: Optional[str] = None
 
     # MCP server settings
     server_name: str = "YouGile MCP Server"

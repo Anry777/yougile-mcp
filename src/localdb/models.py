@@ -120,6 +120,19 @@ class TaskAssignee(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
 
 
+class TaskIssueLink(Base):
+    """Связка задачи YouGile с issue в Redmine для идемпотентного sync_tasks.
+
+    task_id — ID задачи в локальной БД (YouGile Task.id).
+    redmine_issue_id — числовой ID issue в Redmine.
+    """
+
+    __tablename__ = "task_issue_links"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    redmine_issue_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class Comment(Base):
     __tablename__ = "comments"
 

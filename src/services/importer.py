@@ -245,11 +245,20 @@ async def import_project(
                     if not uid:
                         continue
                     user_ids.add(uid)
+                    is_admin_value = u.get("isAdmin")
+                    # Нормализуем флаг администратора компании в строковую роль
+                    if isinstance(is_admin_value, bool):
+                        user_role = "admin" if is_admin_value else "user"
+                    else:
+                        user_role = None
                     await _upsert(session, User, {
                         "id": uid,
                         "name": _norm_str(u.get("name") or u.get("firstName")) if isinstance(u.get("name") or u.get("firstName"), str) else u.get("email"),
                         "email": _norm_str(u.get("email")),
-                        "role": _norm_str(u.get("role")),
+                        # В ответе YouGile поля role сейчас нет, зато есть isAdmin.
+                        # Сохраняем его как role='admin' или 'user', чтобы можно было
+                        # далее маппить админов на менеджеров в Redmine.
+                        "role": _norm_str(user_role),
                     })
 
             # Project roles

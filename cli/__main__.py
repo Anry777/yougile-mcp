@@ -218,9 +218,9 @@ def main(argv=None):
     sync_redmine.add_argument(
         "--entities",
         nargs="+",
-        choices=["users", "projects", "boards", "all"],
+        choices=["users", "projects", "boards", "tasks", "memberships", "all"],
         default=["users"],
-        help="Entities to sync (users, projects, boards; all = all supported)",
+        help="Entities to sync (users, projects, boards, tasks, memberships; all = all supported)",
     )
     sync_redmine.add_argument(
         "--apply",
@@ -544,6 +544,13 @@ def main(argv=None):
                 dry_run = not getattr(args, "apply", False)
                 result: dict = {}
 
+                # Важно: порядок имеет значение.
+                # 1) users — чтобы Redmine-пользователи существовали.
+                # 2) projects — головные проекты.
+                # 3) boards — подпроекты (доски) + inherit_members.
+                # 4) memberships — роли Manager/Репортёр на головных проектах.
+                # 5) tasks — создание issues уже с валидными исполнителями.
+
                 if "all" in entities or "users" in entities:
                     result["users"] = await redmine_sync_service.sync_users(
                         db_path=getattr(args, "db_path", "./yougile_local.db"),
@@ -558,6 +565,19 @@ def main(argv=None):
 
                 if "all" in entities or "boards" in entities:
                     result["boards"] = await redmine_sync_service.sync_boards(
+                        db_path=getattr(args, "db_path", "./yougile_local.db"),
+                        dry_run=dry_run,
+                    )
+
+                if "all" in entities or "memberships" in entities:
+                    result["memberships"] = await redmine_sync_service.sync_memberships(
+                        db_path=getattr(args, "db_path", "./yougile_local.db"),
+                        dry_run=dry_run,
+                    )
+
+                if "all" in entities or "tasks" in entities:
+                    from src.services import redmine_task_sync
+                    result["tasks"] = await redmine_task_sync.sync_tasks(
                         db_path=getattr(args, "db_path", "./yougile_local.db"),
                         dry_run=dry_run,
                     )
@@ -597,6 +617,35 @@ def main(argv=None):
                         print(f"  Skipped excluded:{boards_res.get('skipped_excluded')}")
                         print(f"  Errors:          {boards_res.get('errors')}")
                         print(f"  Dry run:         {boards_res.get('dry_run')}")
+
+                    tasks_res = result.get("tasks") or {}
+                    if tasks_res:
+                        print("\nRedmine sync (tasks as issues):")
+                        print(f"  Total:           {tasks_res.get('total')}")
+                        print(f"  To create:       {tasks_res.get('to_create')}")
+                        print(f"  Created:         {tasks_res.get('created')}")
+                        print(f"  Skipped excluded:{tasks_res.get('skipped_excluded')}")
+                        print(f"  Skipped deleted: {tasks_res.get('skipped_deleted')}")
+                        print(f"  Skipped archived:{tasks_res.get('skipped_archived')}")
+                        print(f"  Skipped no col:  {tasks_res.get('skipped_no_column')}")
+                        print(f"  Errors:          {tasks_res.get('errors')}")
+                        print(f"  Dry run:         {tasks_res.get('dry_run')}")
+
+                    memberships_res = result.get("memberships") or {}
+                    if memberships_res:
+                        print("\nRedmine sync (project memberships):")
+                        print(f"  Projects total:  {memberships_res.get('projects')}")
+                        print(f"  Projects excl.:  {memberships_res.get('projects_skipped_excluded')}")
+                        print(f"  Total links:     {memberships_res.get('total')}")
+                        print(f"  Existing:        {memberships_res.get('existing')}")
+                        print(f"  To create:       {memberships_res.get('to_create')}")
+                        print(f"  Created:         {memberships_res.get('created')}")
+                        print(f"  To update:       {memberships_res.get('to_update')}")
+                        print(f"  Updated:         {memberships_res.get('updated')}")
+                        print(f"  Skipped no email:{memberships_res.get('skipped_no_email')}")
+                        print(f"  Skipped no user: {memberships_res.get('skipped_no_redmine_user')}")
+                        print(f"  Errors:          {memberships_res.get('errors')}")
+                        print(f"  Dry run:         {memberships_res.get('dry_run')}")
         elif args.command == "import":
             try:
                 from src.services import importer as importer_service  # Delay heavy optional deps
