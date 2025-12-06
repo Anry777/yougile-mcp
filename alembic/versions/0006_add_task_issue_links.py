@@ -1,7 +1,7 @@
 """Add task_issue_links table for YouGile↔Redmine mapping
 
-Revision ID: 0004_add_task_issue_links
-Revises: 0003_add_task_timestamps
+Revision ID: 0006_add_task_issue_links
+Revises: 0005_add_webhook_event_timestamp
 Create Date: 2025-12-06 09:30:00
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = "0004_add_task_issue_links"
+revision = "0006_add_task_issue_links"
 down_revision = "0005_add_webhook_event_timestamp"
 branch_labels = None
 depends_on = None

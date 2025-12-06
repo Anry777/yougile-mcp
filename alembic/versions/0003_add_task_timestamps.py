@@ -17,12 +17,26 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("tasks", sa.Column("created_at", sa.DateTime(), nullable=True))
-    op.add_column("tasks", sa.Column("completed_at", sa.DateTime(), nullable=True))
-    op.add_column("tasks", sa.Column("archived_at", sa.DateTime(), nullable=True))
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("tasks")]
+
+    if "created_at" not in columns:
+        op.add_column("tasks", sa.Column("created_at", sa.DateTime(), nullable=True))
+    if "completed_at" not in columns:
+        op.add_column("tasks", sa.Column("completed_at", sa.DateTime(), nullable=True))
+    if "archived_at" not in columns:
+        op.add_column("tasks", sa.Column("archived_at", sa.DateTime(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("tasks", "archived_at")
-    op.drop_column("tasks", "completed_at")
-    op.drop_column("tasks", "created_at")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("tasks")]
+
+    if "archived_at" in columns:
+        op.drop_column("tasks", "archived_at")
+    if "completed_at" in columns:
+        op.drop_column("tasks", "completed_at")
+    if "created_at" in columns:
+        op.drop_column("tasks", "created_at")
