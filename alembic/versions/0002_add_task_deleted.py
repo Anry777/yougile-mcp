@@ -17,8 +17,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("tasks", sa.Column("deleted", sa.Boolean(), nullable=True))
+    # На проде колонка tasks.deleted могла быть добавлена ранее вручную или
+    # другой миграцией. Чтобы alembic upgrade head не падал с DuplicateColumnError,
+    # проверяем наличие колонки перед ALTER TABLE.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("tasks")]
+    if "deleted" not in columns:
+        op.add_column("tasks", sa.Column("deleted", sa.Boolean(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("tasks", "deleted")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("tasks")]
+    if "deleted" in columns:
+        op.drop_column("tasks", "deleted")
