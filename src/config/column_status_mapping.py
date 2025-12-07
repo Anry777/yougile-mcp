@@ -56,16 +56,44 @@ REDMINE_STATUSES = [
 
 
 def get_redmine_status(yougile_column_name: str) -> str:
+    """Получить статус Redmine для колонки YouGile.
+
+    Сначала пробуем точное совпадение по словарю COLUMN_TO_STATUS. Если не
+    нашли, используем простые эвристики по подстрокам (без учёта регистра),
+    чтобы корректно обрабатывать варианты вроде «В работе (без срока)» и т.п.
     """
-    Получить статус Redmine для колонки YouGile.
-    
-    Args:
-        yougile_column_name: Название колонки из YouGile
-        
-    Returns:
-        Название статуса Redmine
-    """
-    return COLUMN_TO_STATUS.get(yougile_column_name, DEFAULT_STATUS)
+
+    name = (yougile_column_name or "").strip()
+    if not name:
+        return DEFAULT_STATUS
+
+    # 1. Точное совпадение (как было раньше)
+    if name in COLUMN_TO_STATUS:
+        return COLUMN_TO_STATUS[name]
+
+    low = name.lower()
+
+    # 2. Эвристики по подстрокам
+    if any(sub in low for sub in ("откл", "аннули")):
+        return "Отклонена"
+
+    if "соглас" in low:
+        return "Согласовано"
+
+    if any(sub in low for sub in ("тест", "qa")):
+        return "Нужен отклик"
+
+    if any(sub in low for sub in ("выполн", "готов", "done")):
+        return "Решена"
+
+    if "работ" in low:
+        return "В работе"
+
+    if any(sub in low for sub in ("нов", "очеред")):
+        return "Новая"
+
+    # 3. По умолчанию – Новая
+    return DEFAULT_STATUS
 
 
 def is_valid_redmine_status(status: str) -> bool:

@@ -137,6 +137,38 @@ def _build_board_identifier(board_id: str | None) -> str:
     return identifier[:100]
 
 
+def _split_subject_and_description(
+    subject: str | None,
+    description: str | None,
+    max_len: int = 255,
+) -> tuple[str, str]:
+    """Обрезать тему до max_len, остаток перенести в начало описания.
+
+    Redmine ограничивает длину subject 255 символами. Если исходная тема
+    длиннее, лишнюю часть добавляем в начало description, чтобы текст не
+    потерялся.
+    """
+
+    subj = (subject or "").strip()
+    desc = description or ""
+
+    if len(subj) <= max_len:
+        return subj, desc
+
+    kept = subj[:max_len]
+    overflow = subj[max_len:].lstrip()
+
+    if overflow:
+        if desc:
+            new_desc = f"{overflow}\n\n{desc}"
+        else:
+            new_desc = overflow
+    else:
+        new_desc = desc
+
+    return kept, new_desc
+
+
 async def _fetch_redmine_projects_by_identifier(client: httpx.AsyncClient) -> Dict[str, Dict[str, Any]]:
     """Выгрузить все проекты Redmine и построить индекс по identifier."""
     projects_by_identifier: Dict[str, Dict[str, Any]] = {}
@@ -459,13 +491,41 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                     continue
 
                 # Формируем payload для issue (используется и при создании, и при обновлении)
+                raw_subject = task.title or f"Task {task_id}"
+                raw_description = task.description or ""
+                subject, description = _split_subject_and_description(raw_subject, raw_description)
+
                 issue_payload: Dict[str, Any] = {
                     "project_id": redmine_project_id,
                     "tracker_id": default_tracker_id,
                     "status_id": status_id,
-                    "subject": task.title or f"Task {task_id}",
-                    "description": task.description or "",
+                    "subject": subject,
+                    "description": description,
                 }
+
+                # Маппинг даты создания задачи YouGile в дату начала в Redmine
+                if getattr(task, "created_at", None) is not None:
+                    try:
+                        issue_payload["start_date"] = task.created_at.date().isoformat()
+                    except Exception:  # noqa: BLE001
+                        # Если что-то пошло не так с датой, просто не устанавливаем start_date
+                        pass
+
+                # Для завершённых задач: 100% готовность и срок завершения из completed_at
+                is_completed = bool(getattr(task, "completed", None)) or status_name in {
+                    "Решена",
+                    "Согласовано",
+                    "Закрыта",
+                }
+
+                if is_completed:
+                    issue_payload["done_ratio"] = 100
+                    if getattr(task, "completed_at", None) is not None:
+                        try:
+                            issue_payload["due_date"] = task.completed_at.date().isoformat()
+                        except Exception:  # noqa: BLE001
+                            # Если дата некорректна, просто не проставляем due_date
+                            pass
 
                 # Подробный лог того, что мы собираемся отправить в Redmine
                 logger.info(
