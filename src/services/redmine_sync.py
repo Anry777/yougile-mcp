@@ -18,6 +18,7 @@ from src.localdb.models import (
     Board as LocalBoard,
     Task as LocalTask,
     Column as LocalColumn,
+    TaskIssueLink as LocalTaskIssueLink,
 )
 
 
@@ -843,20 +844,6 @@ async def sync_boards(db_path: str | None = None, dry_run: bool = True) -> Dict[
                                 {
                                     "yougile_board_id": yg_board_id,
                                     "yougile_project_id": yg_project_id,
-                                    "identifier": identifier,
-                                    "redmine_project_id": rm_subproject_id,
-                                    "action": "error_enable_inherit_members_http",
-                                    "status_code": resp_inherit.status_code,
-                                    "body": resp_inherit.text,
-                                }
-                            )
-                        else:
-                            summary["items"].append(
-                                {
-                                    "yougile_board_id": yg_board_id,
-                                    "yougile_project_id": yg_project_id,
-                                    "identifier": identifier,
-                                    "action": "enabled_inherit_members",
                                     "redmine_project_id": rm_subproject_id,
                                 }
                             )
@@ -1469,5 +1456,181 @@ async def sync_memberships(db_path: str | None = None, dry_run: bool = True) -> 
                             "role_ids": [desired_role_id],
                         }
                     )
+
+    return summary
+
+
+async def delete_all_issues(dry_run: bool = True) -> Dict[str, Any]:
+    """Удалить все issues в Redmine через REST API.
+
+    Учитываются все задачи, доступные по текущему API-ключу. По умолчанию работает в
+    режиме dry-run и ничего не удаляет, только собирает сводку.
+    """
+
+    rm_cfg = _get_redmine_base_config()
+
+    summary: Dict[str, Any] = {
+        "success": True,
+        "dry_run": dry_run,
+        "total": 0,
+        "deleted": 0,
+        "errors": 0,
+        "error_details": [],
+        "items": [],
+    }
+
+    headers = {"X-Redmine-API-Key": rm_cfg["api_key"]}
+    async with httpx.AsyncClient(
+        base_url=rm_cfg["url"],
+        headers=headers,
+        verify=rm_cfg["verify"],
+        timeout=30.0,
+    ) as client:
+        issues: List[Dict[str, Any]] = []
+        limit = 100
+        offset = 0
+
+        # Полностью выгружаем список задач, чтобы не зависеть от изменения total_count
+        while True:
+            try:
+                resp = await client.get(
+                    "/issues.json",
+                    params={
+                        "limit": limit,
+                        "offset": offset,
+                        "status_id": "*",
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to fetch Redmine issues before delete")
+                summary["success"] = False
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "issue_id": None,
+                        "action": "error_prefetch",
+                        "error": str(exc),
+                    }
+                )
+                return summary
+
+            if resp.status_code >= 400:
+                logger.error(
+                    "Failed to fetch Redmine issues before delete: HTTP %s %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                summary["success"] = False
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "issue_id": None,
+                        "action": "error_prefetch_http",
+                        "status_code": resp.status_code,
+                        "body": resp.text,
+                    }
+                )
+                return summary
+
+            data = resp.json()
+            batch = data.get("issues") or []
+            total_count = int(data.get("total_count", len(batch)))
+
+            issues.extend(batch)
+
+            if not batch or offset + limit >= total_count:
+                break
+            offset += limit
+
+        summary["total"] = len(issues)
+
+        session_factory = None
+        try:
+            session_factory = _ensure_local_session_factory()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Local DB is not configured; skipping LocalTaskIssueLink cleanup during delete_all_issues",
+            )
+
+        if not dry_run and session_factory is not None:
+            try:
+                async with session_factory() as link_session:
+                    deleted_links_count = 0
+                    result_links = await link_session.execute(select(LocalTaskIssueLink))
+                    for link in result_links.scalars().all():
+                        await link_session.delete(link)
+                        deleted_links_count += 1
+                    await link_session.commit()
+
+                summary.setdefault("local_links_deleted", 0)
+                summary["local_links_deleted"] += deleted_links_count
+                summary["items"].append(
+                    {
+                        "issue_id": None,
+                        "action": "local_links_cleared",
+                        "count": deleted_links_count,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to cleanup LocalTaskIssueLink during delete_all_issues: %s",
+                    exc,
+                )
+
+        for issue in issues:
+            issue_id = issue.get("id")
+            if not issue_id:
+                continue
+
+            if dry_run:
+                summary["items"].append(
+                    {
+                        "issue_id": issue_id,
+                        "action": "would_delete",
+                    }
+                )
+                continue
+
+            try:
+                resp_del = await client.delete(f"/issues/{issue_id}.json")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to delete Redmine issue %s", issue_id)
+                summary["success"] = False
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "issue_id": issue_id,
+                        "action": "error_delete",
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            if resp_del.status_code >= 400:
+                logger.error(
+                    "Failed to delete Redmine issue %s: HTTP %s %s",
+                    issue_id,
+                    resp_del.status_code,
+                    resp_del.text,
+                )
+                summary["success"] = False
+                summary["errors"] += 1
+                summary["error_details"].append(
+                    {
+                        "issue_id": issue_id,
+                        "action": "error_delete_http",
+                        "status_code": resp_del.status_code,
+                        "body": resp_del.text,
+                    }
+                )
+                continue
+
+            summary["deleted"] += 1
+            summary["items"].append(
+                {
+                    "issue_id": issue_id,
+                    "action": "deleted",
+                }
+            )
 
     return summary

@@ -20,6 +20,7 @@ from src.localdb.models import (
     Column as LocalColumn,
     Board as LocalBoard,
     TaskIssueLink as LocalTaskIssueLink,
+    User as LocalUser,
 )
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,8 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
 
     excluded_project_ids = _load_excluded_project_ids()
 
-    # Загружаем задачи с их связями и существующие маппинги task_id -> redmine_issue_id
+    # Загружаем задачи с их связями, существующие маппинги task_id -> redmine_issue_id
+    # и локальных пользователей (для маппинга автора задачи в автора issue Redmine)
     async with session_factory() as session:
         result = await session.execute(
             select(LocalTask)
@@ -330,6 +332,10 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
 
         links_result = await session.execute(select(LocalTaskIssueLink))
         links: Dict[str, int] = {l.task_id: l.redmine_issue_id for l in links_result.scalars().all()}
+
+        users_result = await session.execute(select(LocalUser))
+        users: List[LocalUser] = users_result.scalars().all()
+        users_by_id: Dict[str, LocalUser] = {u.id: u for u in users}
 
     summary["total"] = len(tasks)
 
@@ -551,6 +557,23 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                         # Redmine поддерживает только одного assigned_to
                         issue_payload["assigned_to_id"] = assignee_ids[0]
 
+                # Определяем автора issue в Redmine через маппинг автора задачи YouGile
+                redmine_switch_user = None
+                author_id = getattr(task, "created_by", None)
+                if author_id:
+                    local_author = users_by_id.get(author_id)
+                    if local_author and getattr(local_author, "email", None):
+                        author_email = (local_author.email or "").strip().lower()
+                        rm_author = users_by_email.get(author_email)
+                        if rm_author:
+                            redmine_switch_user = rm_author.get("login") or rm_author.get("id")
+
+                common_request_kwargs: Dict[str, Any] = {}
+                if redmine_switch_user:
+                    headers_with_switch = dict(headers)
+                    headers_with_switch["X-Redmine-Switch-User"] = str(redmine_switch_user)
+                    common_request_kwargs["headers"] = headers_with_switch
+
                 existing_issue_id = links.get(task_id)
 
                 # Решаем, обновлять существующий issue или создавать новый
@@ -577,7 +600,9 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
 
                     try:
                         resp = await client.put(
-                            f"/issues/{existing_issue_id}.json", json=update_payload
+                            f"/issues/{existing_issue_id}.json",
+                            json=update_payload,
+                            **common_request_kwargs,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Failed to update Redmine issue for task %s", task_id)
@@ -594,24 +619,52 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                         continue
 
                     if resp.status_code >= 400:
-                        logger.error(
-                            "Failed to update Redmine issue for task %s: HTTP %s %s; payload=%r",
-                            task_id,
-                            resp.status_code,
-                            resp.text,
-                            update_payload,
-                        )
-                        summary["success"] = False
-                        summary["errors"] += 1
-                        summary["error_details"].append(
-                            {
-                                "task_id": task_id,
-                                "redmine_issue_id": existing_issue_id,
-                                "action": "error_update_http",
-                                "status_code": resp.status_code,
-                                "body": resp.text,
-                            }
-                        )
+                        if resp.status_code == 404:
+                            # Сценарий "битой" связи: в локальной БД есть link на issue,
+                            # которого в Redmine уже нет (например, его удалили вручную
+                            # или через массовое удаление). В этом случае удаляем
+                            # LocalTaskIssueLink и позволяем задаче быть пересозданной
+                            # на следующем запуске sync.
+                            logger.warning(
+                                "Redmine issue %s for task %s not found (404). "
+                                "Removing local link so it can be recreated.",
+                                existing_issue_id,
+                                task_id,
+                            )
+
+                            if not dry_run:
+                                obj = await link_session.get(LocalTaskIssueLink, task_id)
+                                if obj is not None:
+                                    await link_session.delete(obj)
+
+                            links.pop(task_id, None)
+                            summary["items"].append(
+                                {
+                                    "task_id": task_id,
+                                    "redmine_issue_id": existing_issue_id,
+                                    "action": "stale_link_removed",
+                                    "status_code": resp.status_code,
+                                }
+                            )
+                        else:
+                            logger.error(
+                                "Failed to update Redmine issue for task %s: HTTP %s %s; payload=%r",
+                                task_id,
+                                resp.status_code,
+                                resp.text,
+                                update_payload,
+                            )
+                            summary["success"] = False
+                            summary["errors"] += 1
+                            summary["error_details"].append(
+                                {
+                                    "task_id": task_id,
+                                    "redmine_issue_id": existing_issue_id,
+                                    "action": "error_update_http",
+                                    "status_code": resp.status_code,
+                                    "body": resp.text,
+                                }
+                            )
                         continue
 
                     body_upd = resp.json() if resp.content else {}
@@ -655,7 +708,7 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                 }
 
                 try:
-                    resp = await client.post("/issues.json", json=request_payload)
+                    resp = await client.post("/issues.json", json=request_payload, **common_request_kwargs)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Failed to create Redmine issue for task %s", task_id)
                     summary["success"] = False
@@ -694,7 +747,11 @@ async def sync_tasks(db_path: str | None = None, dry_run: bool = True) -> Dict[s
                         }
 
                         try:
-                            resp_retry = await client.post("/issues.json", json=retry_payload)
+                            resp_retry = await client.post(
+                                "/issues.json",
+                                json=retry_payload,
+                                **common_request_kwargs,
+                            )
                         except Exception as exc:  # noqa: BLE001
                             logger.exception(
                                 "Failed to create Redmine issue for task %s after removing assignee",
